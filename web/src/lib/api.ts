@@ -1,4 +1,4 @@
-import { httpRequest } from "@/lib/request";
+import { httpRequest, request } from "@/lib/request";
 
 export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
@@ -440,6 +440,32 @@ export async function fetchManagedImages(filters: { start_date?: string; end_dat
 
 export async function deleteManagedImages(body: { paths?: string[]; start_date?: string; end_date?: string; all_matching?: boolean }) {
   return httpRequest<{ removed: number }>("/api/images/delete", { method: "POST", body });
+}
+
+export async function downloadImages(paths: string[]) {
+  const response = await request.post("/api/images/download", { paths }, { responseType: "blob" });
+  const blob = response.data as Blob;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "images.zip";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export async function downloadSingleImage(path: string) {
+  const response = await request.get(`/api/images/download/${path}`, { responseType: "blob" });
+  const blob = response.data as Blob;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = path.split("/").pop() || "image.png";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 export async function fetchImageTags() {

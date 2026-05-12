@@ -246,6 +246,20 @@ export async function saveImageConversation(conversation: ImageConversation): Pr
   });
 }
 
+export async function renameImageConversation(id: string, title: string): Promise<void> {
+  await queueImageConversationWrite(async () => {
+    const items = await readStoredImageConversations();
+    const target = items.find((item) => item.id === id);
+    if (!target) return;
+    const updated = { ...target, title, updatedAt: new Date().toISOString() };
+    const nextItems = sortImageConversations([
+      updated,
+      ...items.filter((item) => item.id !== id),
+    ]);
+    await imageConversationStorage.setItem(IMAGE_CONVERSATIONS_KEY, nextItems);
+  });
+}
+
 export async function deleteImageConversation(id: string): Promise<void> {
   await queueImageConversationWrite(async () => {
     const items = await readStoredImageConversations();

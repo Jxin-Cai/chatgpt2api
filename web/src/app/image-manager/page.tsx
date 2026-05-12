@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CalendarDays, ChevronLeft, ChevronRight, Copy, ImageIcon, LoaderCircle, Maximize2, Plus, RefreshCw, Search, Tag, Trash2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Copy, Download, ImageIcon, LoaderCircle, Maximize2, Plus, RefreshCw, Search, Tag, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { DateRangeFilter } from "@/components/date-range-filter";
@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { deleteImageTag, deleteManagedImages, fetchImageTags, fetchManagedImages, setImageTags, type ManagedImage } from "@/lib/api";
+import { deleteImageTag, deleteManagedImages, downloadImages, downloadSingleImage, fetchImageTags, fetchManagedImages, setImageTags, type ManagedImage } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 const LONG_PRESS_MS = 800;
@@ -74,6 +74,7 @@ function ImageManagerContent() {
   const deleteTargetRef = useRef<ManagedImage | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [deleteMode, setDeleteMode] = useState<"selected" | "filtered" | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const filteredItems = selectedTags.length > 0
     ? items.filter((item) => selectedTags.every((t) => (item.tags ?? []).includes(t)))
@@ -232,6 +233,24 @@ function ImageManagerContent() {
     }
   };
 
+  const handleBatchDownload = async () => {
+    const paths = deleteMode === "filtered" ? items.map((item) => item.rel) : selectedPaths;
+    if (paths.length === 0) return;
+    setIsDownloading(true);
+    try {
+      await downloadImages(paths);
+      toast.success(`已下载 ${paths.length} 张图片`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "下载失败");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleSingleDownload = async (item: ManagedImage) => {
+    await downloadSingleImage(item.rel);
+  };
+
   useEffect(() => {
     void loadImages();
   }, [startDate, endDate]);
@@ -332,6 +351,10 @@ function ImageManagerContent() {
               <button type="button" className="text-sm text-stone-500 hover:text-stone-900 disabled:text-stone-300" onClick={() => setSelectedPaths([])} disabled={selectedPaths.length === 0 || isDeleting}>
                 取消选择
               </button>
+              <Button variant="outline" className="h-8 rounded-lg border-stone-200 bg-white px-3 text-stone-600 hover:bg-stone-50" onClick={() => void handleBatchDownload()} disabled={selectedPaths.length === 0 || isDownloading || isDeleting}>
+                {isDownloading ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+                下载所选
+              </Button>
               <Button variant="outline" className="h-8 rounded-lg border-rose-200 bg-white px-3 text-rose-600 hover:bg-rose-50" onClick={() => setDeleteMode("selected")} disabled={selectedPaths.length === 0 || isDeleting}>
                 <Trash2 className="size-4" />
                 删除所选
@@ -385,6 +408,15 @@ function ImageManagerContent() {
                       {item.created_at}
                     </div>
                     <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 rounded-lg text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                        onClick={() => void handleSingleDownload(item)}
+                        title="下载图片"
+                      >
+                        <Download className="size-4" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon"

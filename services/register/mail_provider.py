@@ -323,10 +323,8 @@ class DuckMailProvider(BaseMailProvider):
         return data if isinstance(data, list) else data.get("hydra:member") or data.get("member") or data.get("data") or []
 
     def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
-        domains = self._items(self._request("GET", "/domains", use_api_key=True))
-        domain = random.choice(domains).get("domain") if domains else self.default_domain
         password = "".join(random.choices(string.ascii_letters + string.digits, k=12))
-        address = f"{username or _random_mailbox_name()}@{domain}"
+        address = f"{username or _random_mailbox_name()}@{self.default_domain}"
         payload = {"address": address, "password": password}
         account = self._request("POST", "/accounts", use_api_key=True, payload=payload)
         token_data = self._request("POST", "/token", use_api_key=True, payload=payload)

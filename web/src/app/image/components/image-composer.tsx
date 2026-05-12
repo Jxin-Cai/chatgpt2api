@@ -46,7 +46,9 @@ export function ImageComposer({
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [isSizeMenuOpen, setIsSizeMenuOpen] = useState(false);
+  const [sizeMenuPos, setSizeMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const sizeMenuRef = useRef<HTMLDivElement>(null);
+  const sizeMenuBtnRef = useRef<HTMLButtonElement>(null);
   const lightboxImages = useMemo(
     () => referenceImages.map((image, index) => ({ id: `${image.name}-${index}`, src: image.dataUrl })),
     [referenceImages],
@@ -176,9 +178,10 @@ export function ImageComposer({
                     variant="outline"
                     className="h-9 shrink-0 rounded-full border-stone-200 bg-white px-3 text-xs font-medium text-stone-700 shadow-none sm:h-10 sm:px-4 sm:text-sm"
                     onClick={onPickReferenceImage}
+                    aria-label={referenceImages.length > 0 ? "添加参考图" : "上传"}
                   >
                     <ImagePlus className="size-3.5 sm:size-4" />
-                    <span>{referenceImages.length > 0 ? "添加参考图" : "上传"}</span>
+                    <span className="hidden sm:inline">{referenceImages.length > 0 ? "添加参考图" : "上传"}</span>
                   </Button>
                   <div className="shrink-0 rounded-full bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-600 sm:px-3 sm:py-2 sm:text-xs">
                     <span className="hidden sm:inline">剩余额度 </span>{availableQuota}
@@ -190,7 +193,7 @@ export function ImageComposer({
                     </div>
                   )}
                   <div className="flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-2 py-0.5 sm:h-auto sm:gap-2 sm:px-3 sm:py-1">
-                    <span className="text-[11px] font-medium text-stone-700 sm:text-sm">张数</span>
+                    <span className="hidden text-[11px] font-medium text-stone-700 sm:inline sm:text-sm">张数</span>
                     <Input
                       type="number"
                       inputMode="numeric"
@@ -203,20 +206,36 @@ export function ImageComposer({
                     />
                   </div>
                   <div
-                    ref={sizeMenuRef}
                     className="relative flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-2 py-0.5 text-[11px] sm:h-auto sm:gap-2 sm:px-3 sm:py-1 sm:text-[13px]"
                   >
-                    <span className="font-medium text-stone-700 sm:text-sm">比例</span>
+                    <span className="hidden font-medium text-stone-700 sm:inline sm:text-sm">比例</span>
                     <button
+                      ref={sizeMenuBtnRef}
                       type="button"
                       className="flex h-7 w-[78px] items-center justify-between bg-transparent text-left text-xs font-bold text-stone-700 min-[390px]:w-[96px] sm:h-8 sm:w-[132px]"
-                      onClick={() => setIsSizeMenuOpen((open) => !open)}
+                      onClick={() => {
+                        if (!isSizeMenuOpen && sizeMenuBtnRef.current) {
+                          const rect = sizeMenuBtnRef.current.getBoundingClientRect();
+                          const menuWidth = Math.min(186, window.innerWidth - 32);
+                          setSizeMenuPos({ top: rect.top - 8, left: Math.max(16, Math.min(rect.left, window.innerWidth - menuWidth - 16)) });
+                        }
+                        setIsSizeMenuOpen((open) => !open);
+                      }}
                     >
                       <span className="truncate">{imageSizeLabel}</span>
                       <ChevronDown className={cn("size-4 shrink-0 opacity-60 transition", isSizeMenuOpen && "rotate-180")} />
                     </button>
                     {isSizeMenuOpen ? (
-                      <div className="fixed inset-x-4 bottom-[calc(env(safe-area-inset-bottom)+5.75rem)] z-[80] max-h-[45dvh] overflow-y-auto rounded-3xl border border-white/80 bg-white p-2 shadow-[0_24px_80px_-32px_rgba(15,23,42,0.35)] sm:absolute sm:inset-x-auto sm:bottom-[calc(100%+10px)] sm:left-0 sm:w-[186px]">
+                      <div
+                        ref={sizeMenuRef}
+                        className="fixed z-[80] max-h-[45dvh] overflow-y-auto rounded-3xl border border-white/80 bg-white p-2 shadow-[0_24px_80px_-32px_rgba(15,23,42,0.35)]"
+                        style={{
+                          top: sizeMenuPos.top,
+                          left: sizeMenuPos.left,
+                          transform: "translateY(-100%)",
+                          width: "min(186px, calc(100vw - 2rem))",
+                        }}
+                      >
                         {imageSizeOptions.map((option) => {
                           const active = option.value === imageSize;
                           return (

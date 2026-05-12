@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Clock3, LoaderCircle, RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { Clock3, Download, LoaderCircle, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -31,6 +31,29 @@ function getStoredImageSrc(image: StoredImage) {
     return `data:image/png;base64,${image.b64_json}`;
   }
   return image.url || "";
+}
+
+async function downloadStoredImage(image: StoredImage, index: number) {
+  let blob: Blob;
+  if (image.b64_json) {
+    const binary = atob(image.b64_json);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    blob = new Blob([bytes], { type: "image/png" });
+  } else if (image.url) {
+    const res = await fetch(image.url);
+    blob = await res.blob();
+  } else {
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `image-${index + 1}.png`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 export function ImageResults({
@@ -218,15 +241,28 @@ export function ImageResults({
                                 <span>结果 {index + 1}</span>
                                 {imageMeta ? <span className="block text-stone-400 sm:ml-2 sm:inline">{imageMeta}</span> : null}
                               </div>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-7 w-fit rounded-full border-stone-200 bg-white px-2 text-[10px] text-stone-700 hover:bg-stone-50 sm:h-8 sm:px-3 sm:text-xs"
-                                onClick={() => onContinueEdit(selectedConversation.id, image)}
-                              >
-                                <Sparkles className="size-3 sm:size-4" />
-                                加入编辑
-                              </Button>
+                              <div className="flex items-center gap-1.5">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 w-7 rounded-full border-stone-200 bg-white px-0 text-[10px] text-stone-700 hover:bg-stone-50 sm:h-8 sm:w-fit sm:px-3 sm:text-xs"
+                                  onClick={() => onContinueEdit(selectedConversation.id, image)}
+                                  aria-label="加入编辑"
+                                >
+                                  <Sparkles className="size-3 sm:size-4" />
+                                  <span className="hidden sm:inline">加入编辑</span>
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 w-7 rounded-full border-stone-200 bg-white px-0 text-[10px] text-stone-700 hover:bg-stone-50 sm:h-8 sm:w-fit sm:px-3 sm:text-xs"
+                                  onClick={() => void downloadStoredImage(image, index)}
+                                  aria-label="下载"
+                                >
+                                  <Download className="size-3 sm:size-4" />
+                                  <span className="hidden sm:inline">下载</span>
+                                </Button>
+                              </div>
                             </div>
                           </div>
                         );

@@ -4,13 +4,13 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from api.support import require_admin, require_identity, resolve_image_base_url
 from services.backup_service import BackupError, backup_service
 from services.config import config
-from services.image_service import delete_images, get_thumbnail_response, list_images
+from services.image_service import delete_images, download_images_zip, get_image_download_response, get_thumbnail_response, list_images
 from services.image_tags_service import delete_tag, get_all_tags, set_tags
 from services.log_service import log_service
 from services.proxy_service import test_proxy
@@ -29,6 +29,9 @@ class ImageDeleteRequest(BaseModel):
     start_date: str = ""
     end_date: str = ""
     all_matching: bool = False
+
+class ImageDownloadRequest(BaseModel):
+    paths: list[str]
 
 class ImageTagsRequest(BaseModel):
     path: str
@@ -81,6 +84,21 @@ def create_router(app_version: str) -> APIRouter:
     async def delete_images_endpoint(body: ImageDeleteRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         return delete_images(body.paths, start_date=body.start_date.strip(), end_date=body.end_date.strip(), all_matching=body.all_matching)
+
+    @router.post("/api/images/download")
+    async def download_images_endpoint(body: ImageDownloadRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        buf = download_images_zip(body.paths)
+        return StreamingResponse(
+            buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="images.zip"'},
+        )
+
+    @router.get("/api/images/download/{image_path:path}")
+    async def download_single_image_endpoint(image_path: str, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return get_image_download_response(image_path)
 
     @router.get("/api/logs")
     async def get_logs(type: str = "", start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):

@@ -42,6 +42,8 @@ type TouchGesture =
   | {
       type: "pinch";
       startDistance: number;
+      startCenterX: number;
+      startCenterY: number;
       startTransform: ImageTransform;
     };
 
@@ -56,6 +58,15 @@ function getTouchDistance(touches: TouchList) {
   const first = touches[0];
   const second = touches[1];
   return Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+}
+
+function getTouchCenter(touches: TouchList) {
+  const first = touches[0];
+  const second = touches[1];
+  return {
+    x: (first.clientX + second.clientX) / 2,
+    y: (first.clientY + second.clientY) / 2,
+  };
 }
 
 function normalizeTransform(transform: ImageTransform) {
@@ -81,15 +92,53 @@ export function ImageLightbox({
 }: ImageLightboxProps) {
   const gestureRef = useRef<TouchGesture | null>(null);
   const lastTapRef = useRef(0);
+  const pendingTransformRef = useRef<ImageTransform | null>(null);
+  const rafRef = useRef<number | null>(null);
   const [transform, setTransform] = useState<ImageTransform>({ scale: 1, x: 0, y: 0 });
+  const [isGesturing, setIsGesturing] = useState(false);
   const current = images[currentIndex];
   const hasPrev = currentIndex > 0;
   const hasNext = currentIndex < images.length - 1;
 
-  const resetTransform = useCallback(() => {
-    setTransform({ scale: 1, x: 0, y: 0 });
-    gestureRef.current = null;
+  const cancelScheduledTransform = useCallback(() => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    pendingTransformRef.current = null;
   }, []);
+
+  const scheduleTransform = useCallback((next: ImageTransform) => {
+    pendingTransformRef.current = next;
+    if (rafRef.current != null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const pending = pendingTransformRef.current;
+      pendingTransformRef.current = null;
+      if (pending) {
+        setTransform(pending);
+      }
+    });
+  }, []);
+
+  const flushScheduledTransform = useCallback(() => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    const pending = pendingTransformRef.current;
+    pendingTransformRef.current = null;
+    if (pending) {
+      setTransform(pending);
+    }
+  }, []);
+
+  const resetTransform = useCallback(() => {
+    cancelScheduledTransform();
+    setTransform({ scale: 1, x: 0, y: 0 });
+    setIsGesturing(false);
+    gestureRef.current = null;
+  }, [cancelScheduledTransform]);
 
   const goPrev = useCallback(() => {
     if (hasPrev) onIndexChange(currentIndex - 1);
@@ -102,6 +151,15 @@ export function ImageLightbox({
   useEffect(() => {
     resetTransform();
   }, [current?.id, open, resetTransform]);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -138,9 +196,19 @@ export function ImageLightbox({
     (event: React.TouchEvent<HTMLDivElement>) => {
       if (event.touches.length === 2) {
         event.preventDefault();
+        const startDistance = getTouchDistance(event.touches);
+        if (startDistance < 1) {
+          gestureRef.current = null;
+          return;
+        }
+        const center = getTouchCenter(event.touches);
+        cancelScheduledTransform();
+        setIsGesturing(true);
         gestureRef.current = {
           type: "pinch",
-          startDistance: getTouchDistance(event.touches),
+          startDistance,
+          startCenterX: center.x,
+          startCenterY: center.y,
           startTransform: transform,
         };
         return;
@@ -152,58 +220,81 @@ export function ImageLightbox({
       }
 
       const touch = event.touches[0];
-      gestureRef.current =
-        transform.scale > minScale
-          ? {
-              type: "pan",
-              startX: touch.clientX,
-              startY: touch.clientY,
-              startTransform: transform,
-            }
-          : {
-              type: "swipe",
-              startX: touch.clientX,
-              startY: touch.clientY,
-            };
+      if (transform.scale > minScale) {
+        cancelScheduledTransform();
+        setIsGesturing(true);
+        gestureRef.current = {
+          type: "pan",
+          startX: touch.clientX,
+          startY: touch.clientY,
+          startTransform: transform,
+        };
+      } else {
+        gestureRef.current = {
+          type: "swipe",
+          startX: touch.clientX,
+          startY: touch.clientY,
+        };
+      }
     },
-    [transform],
+    [transform, cancelScheduledTransform],
   );
 
-  const handleTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
-    const gesture = gestureRef.current;
-    if (!gesture) return;
+  const handleTouchMove = useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      const gesture = gestureRef.current;
+      if (!gesture) return;
 
-    if (gesture.type === "pinch" && event.touches.length === 2) {
-      event.preventDefault();
-      const nextScale = clamp(
-        (getTouchDistance(event.touches) / gesture.startDistance) * gesture.startTransform.scale,
-        minScale,
-        maxScale,
-      );
-      setTransform(normalizeTransform({ ...gesture.startTransform, scale: nextScale }));
-      return;
-    }
+      if (gesture.type === "pinch" && event.touches.length === 2) {
+        event.preventDefault();
+        const targetScale = clamp(
+          (getTouchDistance(event.touches) / gesture.startDistance) * gesture.startTransform.scale,
+          minScale,
+          maxScale,
+        );
+        const effectiveRatio = targetScale / gesture.startTransform.scale;
+        const center = getTouchCenter(event.touches);
+        const viewportCenterX = window.innerWidth / 2;
+        const viewportCenterY = window.innerHeight / 2;
+        const nextX =
+          center.x -
+          viewportCenterX -
+          (gesture.startCenterX - viewportCenterX - gesture.startTransform.x) * effectiveRatio;
+        const nextY =
+          center.y -
+          viewportCenterY -
+          (gesture.startCenterY - viewportCenterY - gesture.startTransform.y) * effectiveRatio;
+        scheduleTransform(
+          normalizeTransform({ scale: targetScale, x: nextX, y: nextY }),
+        );
+        return;
+      }
 
-    if (gesture.type === "pan" && event.touches.length === 1) {
-      event.preventDefault();
-      const touch = event.touches[0];
-      setTransform(
-        normalizeTransform({
-          scale: gesture.startTransform.scale,
-          x: gesture.startTransform.x + touch.clientX - gesture.startX,
-          y: gesture.startTransform.y + touch.clientY - gesture.startY,
-        }),
-      );
-      return;
-    }
+      if (gesture.type === "pan" && event.touches.length === 1) {
+        event.preventDefault();
+        const touch = event.touches[0];
+        scheduleTransform(
+          normalizeTransform({
+            scale: gesture.startTransform.scale,
+            x: gesture.startTransform.x + touch.clientX - gesture.startX,
+            y: gesture.startTransform.y + touch.clientY - gesture.startY,
+          }),
+        );
+        return;
+      }
 
-    if (event.touches.length !== 1) {
-      gestureRef.current = null;
-    }
-  }, []);
+      if (event.touches.length !== 1) {
+        gestureRef.current = null;
+      }
+    },
+    [scheduleTransform],
+  );
 
   const handleTouchEnd = useCallback(
     (event: React.TouchEvent<HTMLDivElement>) => {
+      flushScheduledTransform();
+      setIsGesturing(false);
+
       const gesture = gestureRef.current;
       gestureRef.current = null;
       if (!gesture) return;
@@ -235,8 +326,14 @@ export function ImageLightbox({
         goNext();
       }
     },
-    [goPrev, goNext, toggleZoom],
+    [goPrev, goNext, toggleZoom, flushScheduledTransform],
   );
+
+  const handleTouchCancel = useCallback(() => {
+    cancelScheduledTransform();
+    setIsGesturing(false);
+    gestureRef.current = null;
+  }, [cancelScheduledTransform]);
 
   if (!current) return null;
 
@@ -294,12 +391,14 @@ export function ImageLightbox({
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchCancel}
           >
             <img
               src={current.src}
               alt=""
               className={cn(
-                "max-h-[90vh] max-w-[90vw] rounded-lg object-contain transition-transform duration-100",
+                "max-h-[90vh] max-w-[90vw] rounded-lg object-contain will-change-transform",
+                isGesturing ? "" : "transition-transform duration-150 ease-out",
                 transform.scale > minScale ? "cursor-grab active:cursor-grabbing" : "cursor-zoom-in",
               )}
               style={{

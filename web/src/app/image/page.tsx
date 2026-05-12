@@ -31,6 +31,7 @@ import {
   deleteImageConversation,
   getImageConversationStats,
   listImageConversations,
+  renameImageConversation,
   saveImageConversation,
   saveImageConversations,
   type ImageConversation,
@@ -643,6 +644,20 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     }
   };
 
+  const handleRenameConversation = async (id: string, title: string) => {
+    const nextConversations = conversations.map((item) =>
+      item.id === id ? { ...item, title, updatedAt: new Date().toISOString() } : item,
+    );
+    conversationsRef.current = sortImageConversations(nextConversations);
+    setConversations(conversationsRef.current);
+    try {
+      await renameImageConversation(id, title);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "重命名失败";
+      toast.error(message);
+    }
+  };
+
   const openDeleteConversationConfirm = (id: string) => {
     setIsHistoryOpen(false);
     setDeleteConfirm({ type: "one", id });
@@ -1125,6 +1140,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             onClearHistory={openClearHistoryConfirm}
             onSelectConversation={setSelectedConversationId}
             onDeleteConversation={openDeleteConversationConfirm}
+            onRenameConversation={handleRenameConversation}
             formatConversationTime={formatConversationTime}
           />
         </div>
@@ -1152,6 +1168,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
                   setIsHistoryOpen(false);
                 }}
                 onDeleteConversation={openDeleteConversationConfirm}
+                onRenameConversation={handleRenameConversation}
                 formatConversationTime={formatConversationTime}
                 hideActionButtons
               />
