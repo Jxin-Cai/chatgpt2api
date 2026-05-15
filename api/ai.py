@@ -66,8 +66,11 @@ def create_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/v1/models")
-    async def list_models(authorization: str | None = Header(default=None)):
-        require_identity(authorization)
+    async def list_models(
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+    ):
+        require_identity(authorization or (f"Bearer {x_api_key}" if x_api_key else None))
         try:
             return await run_in_threadpool(openai_v1_models.list_models)
         except Exception as exc:
