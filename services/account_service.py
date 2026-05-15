@@ -64,6 +64,7 @@ class AccountService:
         normalized["limits_progress"] = limits_progress if isinstance(limits_progress, list) else []
         normalized["default_model_slug"] = normalized.get("default_model_slug") or None
         normalized["restore_at"] = normalized.get("restore_at") or None
+        normalized["priority"] = int(normalized.get("priority") or 0)
         normalized["success"] = int(normalized.get("success") or 0)
         normalized["fail"] = int(normalized.get("fail") or 0)
         normalized["last_used_at"] = normalized.get("last_used_at")
@@ -75,13 +76,15 @@ class AccountService:
 
     def _list_ready_candidate_tokens(self, excluded_tokens: set[str] | None = None) -> list[str]:
         excluded = set(excluded_tokens or set())
-        return [
-            token
+        eligible = [
+            item
             for item in self._accounts.values()
             if self._is_image_account_available(item)
-               and (token := item.get("access_token") or "")
-               and token not in excluded
+               and (item.get("access_token") or "")
+               and item["access_token"] not in excluded
         ]
+        eligible.sort(key=lambda a: a.get("priority", 0), reverse=True)
+        return [item["access_token"] for item in eligible]
 
     def _list_available_candidate_tokens(self, excluded_tokens: set[str] | None = None) -> list[str]:
         max_concurrency = max(1, int(config.image_account_concurrency or 1))
@@ -132,15 +135,18 @@ class AccountService:
     def get_text_access_token(self, excluded_tokens: set[str] | None = None) -> str:
         excluded = set(excluded_tokens or set())
         with self._lock:
-            candidates = [
-                token
+            eligible = [
+                account
                 for account in self._accounts.values()
                 if account.get("status") not in {"禁用", "异常"}
-                   and (token := account.get("access_token") or "")
-                   and token not in excluded
+                   and (account.get("access_token") or "")
+                   and account["access_token"] not in excluded
             ]
-            if not candidates:
+            if not eligible:
                 return ""
+            eligible.sort(key=lambda a: a.get("priority", 0), reverse=True)
+            top_priority = eligible[0].get("priority", 0)
+            candidates = [a["access_token"] for a in eligible if a.get("priority", 0) == top_priority]
             access_token = candidates[self._index % len(candidates)]
             self._index += 1
             return access_token

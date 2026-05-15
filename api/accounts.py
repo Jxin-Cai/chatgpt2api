@@ -51,6 +51,7 @@ class AccountUpdateRequest(BaseModel):
     type: str | None = None
     status: str | None = None
     quota: int | None = None
+    priority: int | None = None
 
 
 class CPAPoolCreateRequest(BaseModel):
@@ -142,9 +143,17 @@ def create_router() -> APIRouter:
         return {"items": auth_service.list_keys(role="user")}
 
     @router.get("/api/accounts")
-    async def get_accounts(authorization: str | None = Header(default=None)):
+    async def get_accounts(
+            authorization: str | None = Header(default=None),
+            sort_by: str | None = None,
+            order: str = "desc",
+    ):
         require_admin(authorization)
-        return {"items": account_service.list_accounts()}
+        items = account_service.list_accounts()
+        if sort_by in {"priority", "quota"}:
+            reverse = order != "asc"
+            items.sort(key=lambda a: int(a.get(sort_by) or 0), reverse=reverse)
+        return {"items": items}
 
     @router.post("/api/accounts")
     async def create_accounts(body: AccountCreateRequest, authorization: str | None = Header(default=None)):
@@ -185,7 +194,7 @@ def create_router() -> APIRouter:
         access_token = str(body.access_token or "").strip()
         if not access_token:
             raise HTTPException(status_code=400, detail={"error": "access_token is required"})
-        updates = {key: value for key, value in {"type": body.type, "status": body.status, "quota": body.quota}.items() if value is not None}
+        updates = {key: value for key, value in {"type": body.type, "status": body.status, "quota": body.quota, "priority": body.priority}.items() if value is not None}
         if not updates:
             raise HTTPException(status_code=400, detail={"error": "还没有检测到改动，请修改后再保存"})
         account = account_service.update_account(access_token, updates)
