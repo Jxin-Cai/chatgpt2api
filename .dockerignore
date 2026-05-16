@@ -9,6 +9,9 @@ __pycache__
 
 web/.next
 web/node_modules
+web/out
+web/tsconfig.tsbuildinfo
+web/next-env.d.ts
 
 assets
 README.md
