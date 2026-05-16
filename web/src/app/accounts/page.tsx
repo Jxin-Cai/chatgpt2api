@@ -179,13 +179,15 @@ function AccountsPageContent() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [sortBy, setSortBy] = useState("");
+  const [editPriority, setEditPriority] = useState(0);
 
   const loadAccounts = async (silent = false) => {
     if (!silent) {
       setIsLoading(true);
     }
     try {
-      const data = await fetchAccounts();
+      const data = await fetchAccounts(sortBy || undefined, sortBy ? "desc" : undefined);
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
     } catch (error) {
@@ -205,6 +207,11 @@ function AccountsPageContent() {
     didLoadRef.current = true;
     void loadAccounts();
   }, []);
+
+  useEffect(() => {
+    if (!didLoadRef.current) return;
+    void loadAccounts(true);
+  }, [sortBy]);
 
   const filteredAccounts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -316,6 +323,7 @@ function AccountsPageContent() {
   const openEditDialog = (account: Account) => {
     setEditingAccount(account);
     setEditStatus(account.status);
+    setEditPriority(account.priority ?? 0);
   };
 
   const handleUpdateAccount = async () => {
@@ -327,6 +335,7 @@ function AccountsPageContent() {
     try {
       const data = await updateAccount(editingAccount.access_token, {
         status: editStatus,
+        priority: editPriority,
       });
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
@@ -422,6 +431,17 @@ function AccountsPageContent() {
                     ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">优先级</label>
+              <Input
+                type="number"
+                min={0}
+                value={editPriority}
+                onChange={(e) => setEditPriority(Math.max(0, Number(e.target.value) || 0))}
+                className="h-11 rounded-xl border-stone-200 bg-white"
+                placeholder="值越大越优先，默认 0"
+              />
             </div>
           </div>
           <DialogFooter className="pt-2">
@@ -527,6 +547,22 @@ function AccountsPageContent() {
                 ))}
               </SelectContent>
             </Select>
+            <Select
+              value={sortBy}
+              onValueChange={(value) => {
+                setSortBy(value === "default" ? "" : value);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white/85 lg:w-[150px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">默认排序</SelectItem>
+                <SelectItem value="quota">按额度排序</SelectItem>
+                <SelectItem value="priority">按优先级排序</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -589,7 +625,7 @@ function AccountsPageContent() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[920px] text-left">
+              <table className="w-full min-w-[1000px] text-left">
                 <thead className="border-b border-stone-100 text-[11px] text-stone-400 uppercase tracking-[0.18em]">
                   <tr>
                     <th className="w-12 px-4 py-3">
@@ -603,6 +639,7 @@ function AccountsPageContent() {
                     <th className="w-24 px-4 py-3">状态</th>
                     <th className="w-56 px-4 py-3">账号信息</th>
                     <th className="w-24 px-4 py-3">额度</th>
+                    <th className="w-18 px-4 py-3">优先级</th>
                     <th className="w-40 px-4 py-3">恢复时间</th>
                     <th className="w-18 px-4 py-3">成功</th>
                     <th className="w-18 px-4 py-3">失败</th>
@@ -670,6 +707,7 @@ function AccountsPageContent() {
                             {formatQuota(account)}
                           </Badge>
                         </td>
+                        <td className="px-4 py-3 text-stone-500">{account.priority ?? 0}</td>
                         <td className="px-4 py-3 text-xs leading-5 text-stone-500">
                           {(() => {
                             const restore = formatRestoreAt(account.restore_at);

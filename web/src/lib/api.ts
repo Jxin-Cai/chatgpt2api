@@ -23,6 +23,7 @@ export type Account = {
   success: number;
   fail: number;
   last_used_at?: string | null;
+  priority?: number;
 };
 
 type AccountListResponse = {
@@ -250,8 +251,12 @@ export async function login(authKey: string) {
   });
 }
 
-export async function fetchAccounts() {
-  return httpRequest<AccountListResponse>("/api/accounts");
+export async function fetchAccounts(sortBy?: string, order?: string) {
+  const params = new URLSearchParams();
+  if (sortBy) params.set("sort_by", sortBy);
+  if (order) params.set("order", order);
+  const qs = params.toString();
+  return httpRequest<AccountListResponse>(`/api/accounts${qs ? `?${qs}` : ""}`);
 }
 
 export async function createAccounts(tokens: string[]) {
@@ -281,6 +286,7 @@ export async function updateAccount(
     type?: AccountType;
     status?: AccountStatus;
     quota?: number;
+    priority?: number;
   },
 ) {
   return httpRequest<AccountUpdateResponse>("/api/accounts/update", {
