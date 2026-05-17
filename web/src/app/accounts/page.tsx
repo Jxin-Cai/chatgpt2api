@@ -282,9 +282,8 @@ function AccountsPageContent() {
     setIsDeleting(true);
     try {
       const data = await deleteAccounts(tokens);
-      setAccounts(data.items);
-      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
       toast.success(`删除 ${data.removed ?? 0} 个账户`);
+      await loadAccounts(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : "删除账户失败";
       toast.error(message);
