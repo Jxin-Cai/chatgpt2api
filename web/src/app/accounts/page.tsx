@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import {
+  ArrowDownNarrowWide,
+  ArrowUpNarrowWide,
   Ban,
   CheckCircle2,
   ChevronLeft,
@@ -180,6 +182,7 @@ function AccountsPageContent() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [sortBy, setSortBy] = useState("");
+  const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
   const [editPriority, setEditPriority] = useState(0);
 
   const loadAccounts = async (silent = false) => {
@@ -187,7 +190,7 @@ function AccountsPageContent() {
       setIsLoading(true);
     }
     try {
-      const data = await fetchAccounts(sortBy || undefined, sortBy ? "desc" : undefined);
+      const data = await fetchAccounts(sortBy || undefined, sortBy ? sortOrder : undefined);
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
     } catch (error) {
@@ -211,7 +214,7 @@ function AccountsPageContent() {
   useEffect(() => {
     if (!didLoadRef.current) return;
     void loadAccounts(true);
-  }, [sortBy]);
+  }, [sortBy, sortOrder]);
 
   const filteredAccounts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -562,6 +565,23 @@ function AccountsPageContent() {
                 <SelectItem value="priority">按优先级排序</SelectItem>
               </SelectContent>
             </Select>
+            {sortBy ? (
+              <Button
+                variant="outline"
+                className="h-10 w-10 shrink-0 rounded-xl border-stone-200 bg-white/85 px-0"
+                onClick={() => {
+                  setSortOrder((prev) => (prev === "desc" ? "asc" : "desc"));
+                  setPage(1);
+                }}
+                title={sortOrder === "desc" ? "降序（点击切换为升序）" : "升序（点击切换为降序）"}
+              >
+                {sortOrder === "desc" ? (
+                  <ArrowDownNarrowWide className="size-4" />
+                ) : (
+                  <ArrowUpNarrowWide className="size-4" />
+                )}
+              </Button>
+            ) : null}
           </div>
         </div>
 

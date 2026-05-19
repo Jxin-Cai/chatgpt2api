@@ -83,8 +83,11 @@ class AccountService:
                and (item.get("access_token") or "")
                and item["access_token"] not in excluded
         ]
+        if not eligible:
+            return []
         eligible.sort(key=lambda a: a.get("priority", 0), reverse=True)
-        return [item["access_token"] for item in eligible]
+        top_priority = eligible[0].get("priority", 0)
+        return [item["access_token"] for item in eligible if item.get("priority", 0) == top_priority]
 
     def _list_available_candidate_tokens(self, excluded_tokens: set[str] | None = None) -> list[str]:
         max_concurrency = max(1, int(config.image_account_concurrency or 1))
@@ -94,18 +97,53 @@ class AccountService:
             if int(self._image_inflight.get(token, 0)) < max_concurrency
         ]
 
+    def _list_ready_candidate_tokens_all(self, excluded_tokens: set[str] | None = None) -> list[str]:
+        """返回所有优先级的可用候选（用于判断是否还有任何可用额度）。"""
+        excluded = set(excluded_tokens or set())
+        eligible = [
+            item
+            for item in self._accounts.values()
+            if self._is_image_account_available(item)
+               and (item.get("access_token") or "")
+               and item["access_token"] not in excluded
+        ]
+        eligible.sort(key=lambda a: a.get("priority", 0), reverse=True)
+        return [item["access_token"] for item in eligible]
+
     def _acquire_next_candidate_token(self, excluded_tokens: set[str] | None = None) -> str:
         with self._image_slot_condition:
             while True:
-                if not self._list_ready_candidate_tokens(excluded_tokens):
+                if not self._list_ready_candidate_tokens_all(excluded_tokens):
                     raise RuntimeError("no available image quota")
-                tokens = self._list_available_candidate_tokens(excluded_tokens)
+                tokens = self._get_priority_aware_candidates(excluded_tokens)
                 if tokens:
                     access_token = tokens[self._index % len(tokens)]
                     self._index += 1
                     self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
                     return access_token
                 self._image_slot_condition.wait(timeout=1.0)
+
+    def _get_priority_aware_candidates(self, excluded_tokens: set[str] | None = None) -> list[str]:
+        """按优先级从高到低逐组检查，只要某组还有空闲并发槽就返回该组的可用 token。"""
+        excluded = set(excluded_tokens or set())
+        max_concurrency = max(1, int(config.image_account_concurrency or 1))
+        eligible = [
+            item
+            for item in self._accounts.values()
+            if self._is_image_account_available(item)
+               and (item.get("access_token") or "")
+               and item["access_token"] not in excluded
+        ]
+        if not eligible:
+            return []
+        eligible.sort(key=lambda a: a.get("priority", 0), reverse=True)
+        priorities = list(dict.fromkeys(item.get("priority", 0) for item in eligible))
+        for priority in priorities:
+            group = [item["access_token"] for item in eligible if item.get("priority", 0) == priority]
+            available = [t for t in group if int(self._image_inflight.get(t, 0)) < max_concurrency]
+            if available:
+                return available
+        return []
 
     def release_image_slot(self, access_token: str) -> None:
         if not access_token:
@@ -145,11 +183,13 @@ class AccountService:
             if not eligible:
                 return ""
             eligible.sort(key=lambda a: a.get("priority", 0), reverse=True)
-            top_priority = eligible[0].get("priority", 0)
-            candidates = [a["access_token"] for a in eligible if a.get("priority", 0) == top_priority]
-            access_token = candidates[self._index % len(candidates)]
-            self._index += 1
-            return access_token
+            priorities = list(dict.fromkeys(a.get("priority", 0) for a in eligible))
+            for priority in priorities:
+                candidates = [a["access_token"] for a in eligible if a.get("priority", 0) == priority]
+                access_token = candidates[self._index % len(candidates)]
+                self._index += 1
+                return access_token
+            return ""
 
     def mark_text_used(self, access_token: str) -> None:
         if not access_token:
