@@ -47,6 +47,7 @@ import {
   fetchAccounts,
   refreshAccounts,
   updateAccount,
+  batchUpdateAccounts,
   type Account,
   type AccountStatus,
 } from "@/lib/api";
@@ -184,6 +185,9 @@ function AccountsPageContent() {
   const [sortBy, setSortBy] = useState("");
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
   const [editPriority, setEditPriority] = useState(0);
+  const [batchPriorityOpen, setBatchPriorityOpen] = useState(false);
+  const [batchPriority, setBatchPriority] = useState(0);
+  const [isBatchUpdating, setIsBatchUpdating] = useState(false);
 
   const loadAccounts = async (silent = false) => {
     if (!silent) {
@@ -304,8 +308,7 @@ function AccountsPageContent() {
     setIsRefreshing(true);
     try {
       const data = await refreshAccounts(accessTokens);
-      setAccounts(data.items);
-      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
+      await loadAccounts(true);
       if (data.errors.length > 0) {
         const firstError = data.errors[0]?.error;
         toast.error(
@@ -335,12 +338,11 @@ function AccountsPageContent() {
 
     setIsUpdating(true);
     try {
-      const data = await updateAccount(editingAccount.access_token, {
+      await updateAccount(editingAccount.access_token, {
         status: editStatus,
         priority: editPriority,
       });
-      setAccounts(data.items);
-      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
+      await loadAccounts(true);
       setEditingAccount(null);
       toast.success("账号信息已更新");
     } catch (error) {
@@ -348,6 +350,26 @@ function AccountsPageContent() {
       toast.error(message);
     } finally {
       setIsUpdating(false);
+    }
+  };
+
+  const handleBatchUpdatePriority = async () => {
+    if (selectedIds.length === 0) {
+      toast.error("请先选择要修改的账户");
+      return;
+    }
+
+    setIsBatchUpdating(true);
+    try {
+      const data = await batchUpdateAccounts(selectedIds, { priority: batchPriority });
+      await loadAccounts(true);
+      setBatchPriorityOpen(false);
+      toast.success(`已更新 ${data.updated} 个账户的优先级`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "批量更新失败";
+      toast.error(message);
+    } finally {
+      setIsBatchUpdating(false);
     }
   };
 
@@ -462,6 +484,50 @@ function AccountsPageContent() {
             >
               {isUpdating ? <LoaderCircle className="size-4 animate-spin" /> : null}
               保存修改
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={batchPriorityOpen} onOpenChange={(open) => {
+        if (!open) setBatchPriorityOpen(false);
+      }}>
+        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+          <DialogHeader className="gap-2">
+            <DialogTitle>批量设置优先级</DialogTitle>
+            <DialogDescription className="text-sm leading-6">
+              为选中的 {selectedIds.length} 个账号统一设置优先级。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">优先级</label>
+              <Input
+                type="number"
+                min={0}
+                value={batchPriority}
+                onChange={(e) => setBatchPriority(Math.max(0, Number(e.target.value) || 0))}
+                className="h-11 rounded-xl border-stone-200 bg-white"
+                placeholder="值越大越优先，默认 0"
+              />
+            </div>
+          </div>
+          <DialogFooter className="pt-2">
+            <Button
+              variant="secondary"
+              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              onClick={() => setBatchPriorityOpen(false)}
+              disabled={isBatchUpdating}
+            >
+              取消
+            </Button>
+            <Button
+              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
+              onClick={() => void handleBatchUpdatePriority()}
+              disabled={isBatchUpdating}
+            >
+              {isBatchUpdating ? <LoaderCircle className="size-4 animate-spin" /> : null}
+              确认修改
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -634,6 +700,18 @@ function AccountsPageContent() {
                 >
                   {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                   删除所选
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-stone-500 hover:bg-stone-100"
+                  onClick={() => {
+                    setBatchPriority(0);
+                    setBatchPriorityOpen(true);
+                  }}
+                  disabled={selectedIds.length === 0 || isBatchUpdating}
+                >
+                  <Pencil className="size-4" />
+                  批量设置优先级
                 </Button>
                 {selectedIds.length > 0 ? (
                   <span className="rounded-lg bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600">

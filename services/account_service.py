@@ -286,6 +286,27 @@ class AccountService:
             items = [dict(item) for item in self._accounts.values()]
         return {"removed": removed, "items": items}
 
+    def batch_update_accounts(self, access_tokens: list[str], updates: dict) -> dict:
+        access_tokens = [token for token in access_tokens if token]
+        if not access_tokens:
+            return {"updated": 0, "items": self.list_accounts()}
+        updated = 0
+        with self._lock:
+            for token in access_tokens:
+                current = self._accounts.get(token)
+                if current is None:
+                    continue
+                account = self._normalize_account({**current, **updates, "access_token": token})
+                if account is None:
+                    continue
+                self._accounts[token] = account
+                updated += 1
+            if updated:
+                self._save_accounts()
+                log_service.add(LOG_TYPE_ACCOUNT, f"批量更新 {updated} 个账号", {"updated": updated, "fields": list(updates.keys())})
+            items = [dict(item) for item in self._accounts.values()]
+        return {"updated": updated, "items": items}
+
     def update_account(self, access_token: str, updates: dict) -> dict | None:
         if not access_token:
             return None

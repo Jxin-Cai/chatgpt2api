@@ -50,6 +50,11 @@ type AccountUpdateResponse = {
   items: Account[];
 };
 
+type AccountBatchUpdateResponse = {
+  updated: number;
+  items: Account[];
+};
+
 export type SettingsConfig = {
   proxy: string;
   base_url?: string;
@@ -293,6 +298,19 @@ export async function updateAccount(
     method: "POST",
     body: {
       access_token: accessToken,
+      ...updates,
+    },
+  });
+}
+
+export async function batchUpdateAccounts(
+  accessTokens: string[],
+  updates: { priority?: number },
+) {
+  return httpRequest<AccountBatchUpdateResponse>("/api/accounts/batch-update", {
+    method: "POST",
+    body: {
+      access_tokens: accessTokens,
       ...updates,
     },
   });

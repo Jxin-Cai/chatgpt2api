@@ -54,6 +54,11 @@ class AccountUpdateRequest(BaseModel):
     priority: int | None = None
 
 
+class AccountBatchUpdateRequest(BaseModel):
+    access_tokens: list[str] = Field(default_factory=list)
+    priority: int | None = None
+
+
 class CPAPoolCreateRequest(BaseModel):
     name: str = ""
     base_url: str = ""
@@ -201,6 +206,17 @@ def create_router() -> APIRouter:
         if account is None:
             raise HTTPException(status_code=404, detail={"error": "account not found"})
         return {"item": account, "items": account_service.list_accounts()}
+
+    @router.post("/api/accounts/batch-update")
+    async def batch_update_accounts(body: AccountBatchUpdateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        access_tokens = [str(token or "").strip() for token in body.access_tokens if str(token or "").strip()]
+        if not access_tokens:
+            raise HTTPException(status_code=400, detail={"error": "access_tokens is required"})
+        updates = {key: value for key, value in {"priority": body.priority}.items() if value is not None}
+        if not updates:
+            raise HTTPException(status_code=400, detail={"error": "还没有检测到改动，请修改后再保存"})
+        return account_service.batch_update_accounts(access_tokens, updates)
 
     @router.get("/api/cpa/pools")
     async def list_cpa_pools(authorization: str | None = Header(default=None)):
