@@ -582,6 +582,18 @@ def stream_image_outputs(
             yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)
         return
 
+    if not image_urls:
+        logger.warning({
+            "event": "image_resolve_empty",
+            "conversation_id": conversation_id,
+            "file_ids": file_ids,
+            "sediment_ids": sediment_ids,
+            "blocked": last.get("blocked"),
+            "tool_invoked": last.get("tool_invoked"),
+            "turn_use_case": last.get("turn_use_case"),
+            "text": message,
+        })
+
     if message:
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
 
@@ -630,7 +642,12 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
             except Exception as exc:
                 account_service.mark_image_result(token, False)
                 last_error = str(exc)
-                logger.warning({"event": "image_stream_fail", "request_token": token, "error": last_error})
+                logger.warning({
+                    "event": "image_stream_fail",
+                    "request_token": token[:10] + "..." if len(token) > 10 else token,
+                    "error": last_error,
+                    "error_type": type(exc).__name__,
+                })
                 if not emitted_for_token and is_token_invalid_error(last_error):
                     account_service.remove_invalid_token(token, "image_stream")
                     continue

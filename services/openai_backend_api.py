@@ -1,12 +1,13 @@
 import base64
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, ClassVar, Dict, Iterator, Optional
 
 from curl_cffi import requests
 from PIL import Image
@@ -51,6 +52,10 @@ class OpenAIBackendAPI:
     - `stream_conversation()` 是底层统一流式入口
     - 协议兼容转换放在 `services.protocol`
     """
+
+    _bootstrap_cache: ClassVar[tuple[list[str], str, float]] = ([], "", 0.0)
+    _bootstrap_lock: ClassVar[threading.Lock] = threading.Lock()
+    BOOTSTRAP_TTL: ClassVar[float] = 300.0
 
     def __init__(self, access_token: str = "") -> None:
         """初始化后端客户端。
@@ -491,7 +496,6 @@ class OpenAIBackendAPI:
         )
         ensure_ok(response, path)
         upload_meta = response.json()
-        time.sleep(0.5)
         response = self.session.put(
             upload_meta["upload_url"],
             headers={
@@ -666,8 +670,9 @@ class OpenAIBackendAPI:
                 return [], sediment_ids
             logger.debug({"event": "image_poll_wait", "conversation_id": conversation_id,
                           "elapsed_secs": round(time.time() - start, 1)})
-            time.sleep(4)
-        logger.info({"event": "image_poll_timeout", "conversation_id": conversation_id, "timeout_secs": timeout_secs})
+            time.sleep(1.5 if attempt <= 3 else 3.0)
+        logger.warning({"event": "image_poll_timeout", "conversation_id": conversation_id, "timeout_secs": timeout_secs,
+                         "last_attempt": attempt})
         return [], []
 
     def _get_file_download_url(self, file_id: str) -> str:
@@ -778,12 +783,15 @@ class OpenAIBackendAPI:
         return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
 
     def download_image_bytes(self, urls: list[str]) -> list[bytes]:
-        images = []
-        for url in urls:
+        def _fetch(url: str) -> bytes:
             response = self.session.get(url, timeout=120)
             ensure_ok(response, "image_download")
-            images.append(response.content)
-        return images
+            return response.content
+
+        if len(urls) <= 1:
+            return [_fetch(url) for url in urls]
+        with ThreadPoolExecutor(max_workers=min(4, len(urls))) as pool:
+            return list(pool.map(_fetch, urls))
 
     def stream_conversation(
             self,
@@ -835,7 +843,14 @@ class OpenAIBackendAPI:
             response.close()
 
     def _bootstrap(self) -> None:
-        """预热首页，并提取 PoW 相关脚本引用。"""
+        """预热首页，并提取 PoW 相关脚本引用。使用类级别缓存避免重复请求。"""
+        now = time.time()
+        with OpenAIBackendAPI._bootstrap_lock:
+            sources, build, ts = OpenAIBackendAPI._bootstrap_cache
+            if sources and (now - ts) < self.BOOTSTRAP_TTL:
+                self.pow_script_sources = list(sources)
+                self.pow_data_build = build
+                return
         response = self.session.get(
             self.base_url + "/",
             headers=self._bootstrap_headers(),
@@ -845,6 +860,8 @@ class OpenAIBackendAPI:
         self.pow_script_sources, self.pow_data_build = parse_pow_resources(response.text)
         if not self.pow_script_sources:
             self.pow_script_sources = [DEFAULT_POW_SCRIPT]
+        with OpenAIBackendAPI._bootstrap_lock:
+            OpenAIBackendAPI._bootstrap_cache = (list(self.pow_script_sources), self.pow_data_build, time.time())
 
     def _get_chat_requirements(self) -> ChatRequirements:
         """获取当前模式对话所需的 sentinel token。"""
