@@ -54,11 +54,18 @@ def is_token_invalid_error(message: str) -> bool:
     )
 
 
+def is_rate_limit_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return "status=429" in text or "too many requests" in text
+
+
 def image_stream_error_message(message: str) -> str:
     text = str(message or "")
     lower = text.lower()
     if "curl: (35)" in lower or "tls connect error" in lower or "openssl_internal" in lower:
         return "upstream image connection failed, please retry later"
+    if is_rate_limit_error(text):
+        return "upstream rate limit exceeded, please retry later"
     return text or "image generation failed"
 
 
@@ -651,10 +658,16 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 if not emitted_for_token and is_token_invalid_error(last_error):
                     account_service.remove_invalid_token(token, "image_stream")
                     continue
-                raise ImageGenerationError(image_stream_error_message(last_error)) from exc
+                if not emitted_for_token and is_rate_limit_error(last_error):
+                    continue
+                error_msg = image_stream_error_message(last_error)
+                status_code = 429 if is_rate_limit_error(last_error) else 502
+                raise ImageGenerationError(error_msg, status_code=status_code) from exc
 
     if not emitted:
-        raise ImageGenerationError(image_stream_error_message(last_error))
+        error_msg = image_stream_error_message(last_error)
+        status_code = 429 if is_rate_limit_error(last_error) else 502
+        raise ImageGenerationError(error_msg, status_code=status_code)
 
 
 def stream_image_chunks(outputs: Iterable[ImageOutput]) -> Iterator[dict[str, Any]]:
