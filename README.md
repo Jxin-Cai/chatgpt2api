@@ -13,12 +13,7 @@
 > - 严禁将本项目用于生成、传播或协助生成违法、暴力、色情、未成年人相关内容，或用于诈骗、欺诈、骚扰等非法或不当用途。
 > - 使用者应自行承担全部风险，包括但不限于账号被限制、临时封禁或永久封禁以及因违规使用等所导致的法律责任。
 > - 使用本项目即视为你已充分理解并同意本免责声明全部内容；如因滥用、违规或违法使用造成任何后果，均由使用者自行承担。
-
-> [!IMPORTANT]
-> 本项目基于对 ChatGPT 官网相关能力的逆向研究实现，存在账号受限、临时封禁或永久封禁的风险。请勿使用你自己的重要账号、常用账号或高价值账号进行测试。
-
-> [!CAUTION]
-> 旧版本存在已知漏洞，请尽快升级到最新版本。公网部署时请尽量不要放置敏感信息，并自行做好访问控制与隔离。
+> - 本项目基于对 ChatGPT 官网相关能力的逆向研究实现，存在账号受限、临时封禁或永久封禁的风险。请勿使用你自己的重要账号、常用账号或高价值账号进行测试。
 
 ## 快速开始
 
@@ -57,6 +52,15 @@ bun install
 bun run dev
 ```
 
+后续更新新版本：
+
+```bash
+docker pull ghcr.io/basketikun/chatgpt2api:latest
+docker-compose down
+docker-compose up -d
+
+```
+
 ### 存储后端配置
 
 支持通过环境变量 `STORAGE_BACKEND` 切换存储方式：
@@ -85,6 +89,8 @@ environment:
 - `GET /v1/models` 返回 `gpt-image-2`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、
   `gpt-5-mini`
 - 支持通过 `n` 返回多张生成结果
+- 支持生成可编辑 PPT 文件
+- 支持生成可编辑 PSD 文件
 - 支持 Codex 中的画图接口逆向，仅 `Plus` / `Team` / `Pro` 订阅可用，模型别名为 `codex-gpt-image-2`，如有需要可自行在其他场景映射回
   `gpt-image-2`，用于和官网画图区分；也就意味着同一账号会同时有官网和 Codex 两份生图额度
 
@@ -96,13 +102,16 @@ environment:
 - 前端支持多图生成交互
 - 本地保存图片会话历史，支持回看、删除和清空
 - 支持服务端缓存图片URL
+- 图片生成进度追踪，超时后可继续等待
+- 图片懒加载与滚动位置记忆，优化大量图片场景性能
 
 ### 号池管理功能
 
-- 自动刷新账号邮箱、类型、额度和恢复时间
+- 自动刷新账号邮箱、类型、额度和恢复时间（异步进度追踪）
 - 轮询可用账号执行图片生成与图片编辑
 - 遇到 Token 失效类错误时自动剔除无效 Token
 - 定时检查限流账号并自动刷新
+- 支持密码重新登录恢复异常账号，刷新后可自动重登
 - 支持网页端配置全局 HTTP / HTTPS / SOCKS5 / SOCKS5H 代理
 - 支持搜索、筛选、批量刷新、导出、手动编辑和清理账号
 - 支持四种导入方式：本地 CPA JSON 文件导入、远程 CPA 服务器导入、`sub2api` 服务器导入、`access_token` 导入
@@ -111,29 +120,24 @@ environment:
 ### 实验性 / 规划中
 
 - `/v1/complete` 文本补全与流式输出已实现，但仍在测试，目前会出现对话重复的问题，请谨慎测试使用
+- `/v1/chat/completions` 文本链路支持短 TTL 缓存、重复请求合并与相邻重复消息清理，可通过 `chat_completion_cache` 配置调整
 - 详细状态说明见：[功能清单](./docs/feature-status.en.md)
 
-## Screenshots
+## 效果展示
 
-文生图界面：
-
-![image](assets/image.png)
-
-编辑图：
-
-![image](assets/image_edit.png)
-
-Cherry Studio 中使用，支持作为绘图接口接入：
-
-![image](assets/chery_studio.png)
-
-号池管理：
-
-![image](assets/account_pool.png)
-
-New Api 接入：
-
-![image](assets/new_api.png)
+<table width="100%">
+  <tr>
+    <td width="50%"><img src="https://i.ibb.co/Jj8nfwwP/image.png" alt="image" border="0"></td>
+    <td width="50%"><img src="https://i.ibb.co/pqf235v/image-edit.png" alt="image edit" border="0"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="https://i.ibb.co/tPcqtVfd/chery-studio.png" alt="chery studio" border="0"></td>
+    <td width="50%"><img src="https://i.ibb.co/PsT9YHBV/account-pool.png" alt="account pool" border="0"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="https://i.ibb.co/rRWLG08q/new-api.png" alt="new api" border="0"></td>
+  </tr>
+</table>
 
 ## API
 
@@ -204,7 +208,7 @@ curl http://localhost:8000/v1/images/generations \
 <summary><code>POST /v1/images/edits</code></summary>
 <br>
 
-OpenAI 兼容图片编辑接口，用于上传图片并生成编辑结果。
+OpenAI 兼容图片编辑接口，可上传图片文件，也可按官方 JSON 格式传入图片链接并生成编辑结果。
 
 ```bash
 curl http://localhost:8000/v1/images/edits \
@@ -215,16 +219,33 @@ curl http://localhost:8000/v1/images/edits \
   -F "image=@./input.png"
 ```
 
+也可以直接传图片 URL：
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -H "Authorization: Bearer <auth-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "把这张图改成赛博朋克夜景风格",
+    "images": [
+      {"image_url": "https://example.com/input.png"}
+    ]
+  }'
+```
+
 <details>
 <summary>字段说明</summary>
 <br>
 
-| 字段       | 说明                                  |
-|:---------|:------------------------------------|
-| `model`  | 图片模型， `gpt-image-2`                 |
-| `prompt` | 图片编辑提示词                             |
-| `n`      | 生成数量，当前后端限制为 `1-4`                  |
-| `image`  | 需要编辑的图片文件，使用 multipart/form-data 上传 |
+| 字段          | 说明                                            |
+|:------------|:----------------------------------------------|
+| `model`     | 图片模型， `gpt-image-2`                           |
+| `prompt`    | 图片编辑提示词                                       |
+| `n`         | 生成数量，当前后端限制为 `1-4`                            |
+| `image`     | 需要编辑的图片文件，使用 multipart/form-data 上传           |
+| `images`    | JSON 图片引用数组，支持 `{"image_url": "https://..."}` |
+| `image_url` | 表单模式下也可直接传图片链接，支持重复字段传多张图                     |
 
 <br>
 </details>

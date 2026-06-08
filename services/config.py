@@ -27,6 +27,27 @@ DEFAULT_BACKUP_INCLUDE = {
     "images": False,
 }
 
+DEFAULT_IMAGE_STORAGE = {
+    "enabled": False,
+    "mode": "local",
+    "webdav_url": "",
+    "webdav_username": "",
+    "webdav_password": "",
+    "webdav_root_path": "chatgpt2api/images",
+    "public_base_url": "",
+}
+
+DEFAULT_CHAT_COMPLETION_CACHE = {
+    "enabled": True,
+    "ttl_seconds": 60,
+    "max_entries": 256,
+    "dedupe_inflight": True,
+    "stream_cache": True,
+    "normalize_messages": True,
+    "drop_adjacent_duplicates": True,
+    "drop_assistant_history": False,
+}
+
 
 def _normalize_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, str):
@@ -83,6 +104,72 @@ def _normalize_backup_state(value: object) -> dict[str, object]:
         "last_error": str(source.get("last_error") or "").strip() or None,
         "last_object_key": str(source.get("last_object_key") or "").strip() or None,
     }
+
+
+def _normalize_image_storage_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    mode = str(source.get("mode") or "local").strip().lower()
+    if mode not in {"local", "webdav", "both"}:
+        mode = "local"
+    enabled = _normalize_bool(source.get("enabled"), False)
+    if not enabled:
+        mode = "local"
+    root_path = str(source.get("webdav_root_path") or DEFAULT_IMAGE_STORAGE["webdav_root_path"]).strip().strip("/")
+    return {
+        "enabled": enabled,
+        "mode": mode,
+        "webdav_url": str(source.get("webdav_url") or "").strip().rstrip("/"),
+        "webdav_username": str(source.get("webdav_username") or "").strip(),
+        "webdav_password": str(source.get("webdav_password") or "").strip(),
+        "webdav_root_path": root_path or str(DEFAULT_IMAGE_STORAGE["webdav_root_path"]),
+        "public_base_url": str(source.get("public_base_url") or "").strip().rstrip("/"),
+    }
+
+
+def _normalize_chat_completion_cache_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), DEFAULT_CHAT_COMPLETION_CACHE["enabled"]),
+        "ttl_seconds": _normalize_positive_int(
+            source.get("ttl_seconds"),
+            int(DEFAULT_CHAT_COMPLETION_CACHE["ttl_seconds"]),
+            0,
+        ),
+        "max_entries": _normalize_positive_int(
+            source.get("max_entries"),
+            int(DEFAULT_CHAT_COMPLETION_CACHE["max_entries"]),
+            1,
+        ),
+        "dedupe_inflight": _normalize_bool(
+            source.get("dedupe_inflight"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["dedupe_inflight"]),
+        ),
+        "stream_cache": _normalize_bool(
+            source.get("stream_cache"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["stream_cache"]),
+        ),
+        "normalize_messages": _normalize_bool(
+            source.get("normalize_messages"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["normalize_messages"]),
+        ),
+        "drop_adjacent_duplicates": _normalize_bool(
+            source.get("drop_adjacent_duplicates"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["drop_adjacent_duplicates"]),
+        ),
+        "drop_assistant_history": _normalize_bool(
+            source.get("drop_assistant_history"),
+            bool(DEFAULT_CHAT_COMPLETION_CACHE["drop_assistant_history"]),
+        ),
+    }
+
+
+def _validate_image_storage_settings(settings: dict[str, object]) -> None:
+    if not _normalize_bool(settings.get("enabled"), False):
+        return
+    if not str(settings.get("webdav_url") or "").strip():
+        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
+    if not str(settings.get("webdav_password") or "").strip():
+        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
 
 
 @dataclass(frozen=True)
@@ -188,11 +275,59 @@ class ConfigStore:
             return 120
 
     @property
+    def image_poll_interval_secs(self) -> float:
+        try:
+            return max(0.5, float(self.data.get("image_poll_interval_secs", 10.0)))
+        except (TypeError, ValueError):
+            return 10.0
+
+    @property
+    def image_poll_initial_wait_secs(self) -> float:
+        """Image generation upstream takes ~30s; polling immediately wastes requests
+        and trips a transient 429. Default 10s gives the conversation document time
+        to commit before the first poll."""
+        try:
+            return max(0.0, float(self.data.get("image_poll_initial_wait_secs", 10.0)))
+        except (TypeError, ValueError):
+            return 10.0
+
+    @property
     def image_account_concurrency(self) -> int:
         try:
             return max(1, int(self.data.get("image_account_concurrency", 3)))
         except (TypeError, ValueError):
             return 3
+
+    @property
+    def image_parallel_generation(self) -> bool:
+        value = self.data.get("image_parallel_generation", True)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @property
+    def image_settle_enabled(self) -> bool:
+        """图片二次确认机制：找到 file_ids 后等待一段时间再次确认。"""
+        value = self.data.get("image_settle_enabled", True)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @property
+    def image_check_before_hit_enabled(self) -> bool:
+        """先check再hit：通过轮询确认 file_ids 存在后再返回，而非仅依赖 SSE 事件。"""
+        value = self.data.get("image_check_before_hit_enabled", True)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @property
+    def image_settle_secs(self) -> float:
+        """二次确认等待时间（秒）。"""
+        try:
+            return max(0.5, float(self.data.get("image_settle_secs", 2.0)))
+        except (TypeError, ValueError):
+            return 2.0
 
     @property
     def auto_remove_invalid_accounts(self) -> bool:
@@ -204,6 +339,13 @@ class ConfigStore:
     @property
     def auto_remove_rate_limited_accounts(self) -> bool:
         value = self.data.get("auto_remove_rate_limited_accounts", False)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @property
+    def auto_relogin_after_refresh(self) -> bool:
+        value = self.data.get("auto_relogin_after_refresh", False)
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
@@ -277,14 +419,20 @@ class ConfigStore:
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
         data["image_retention_days"] = self.image_retention_days
         data["image_poll_timeout_secs"] = self.image_poll_timeout_secs
+        data["image_poll_interval_secs"] = self.image_poll_interval_secs
+        data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
         data["image_account_concurrency"] = self.image_account_concurrency
+        data["image_parallel_generation"] = self.image_parallel_generation
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts
+        data["auto_relogin_after_refresh"] = self.auto_relogin_after_refresh
         data["log_levels"] = self.log_levels
         data["sensitive_words"] = self.sensitive_words
         data["ai_review"] = self.ai_review
         data["global_system_prompt"] = self.global_system_prompt
         data["backup"] = self.get_backup_settings()
+        data["image_storage"] = self.get_image_storage_settings()
+        data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
         data.pop("auth-key", None)
         return data
 
@@ -296,6 +444,13 @@ class ConfigStore:
         next_data.update(dict(data or {}))
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
+        if "image_storage" in next_data:
+            next_data["image_storage"] = _normalize_image_storage_settings(next_data.get("image_storage"))
+            _validate_image_storage_settings(next_data["image_storage"])
+        if "chat_completion_cache" in next_data:
+            next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
+                next_data.get("chat_completion_cache")
+            )
         next_data.pop("backup_state", None)
         self.data = next_data
         self._save()
@@ -303,6 +458,12 @@ class ConfigStore:
 
     def get_backup_settings(self) -> dict[str, object]:
         return _normalize_backup_settings(self.data.get("backup"))
+
+    def get_image_storage_settings(self) -> dict[str, object]:
+        return _normalize_image_storage_settings(self.data.get("image_storage"))
+
+    def get_chat_completion_cache_settings(self) -> dict[str, object]:
+        return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""

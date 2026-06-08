@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import re
 import string
@@ -11,8 +12,48 @@ from email.utils import parsedate_to_datetime
 from threading import Lock
 from typing import Any, Callable, TypeVar
 
-import requests
-from curl_cffi import requests as curl_requests
+from curl_cffi import requests
+
+
+from services.config import DATA_DIR
+
+DDG_ALIASES_FILE = DATA_DIR / "ddg_aliases.json"
+_ddg_aliases_lock = Lock()
+
+
+def _load_ddg_aliases() -> set[str]:
+    try:
+        if DDG_ALIASES_FILE.exists():
+            data = json.loads(DDG_ALIASES_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return {str(item).strip().lower() for item in data if str(item).strip()}
+    except Exception:
+        pass
+    return set()
+
+
+def _save_ddg_aliases(aliases: set[str]) -> None:
+    DDG_ALIASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DDG_ALIASES_FILE.write_text(json.dumps(sorted(aliases), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _is_ddg_alias_duplicate(address: str) -> bool:
+    target = str(address or "").strip().lower()
+    if not target:
+        return False
+    with _ddg_aliases_lock:
+        used = _load_ddg_aliases()
+        return target in used
+
+
+def _record_ddg_alias(address: str) -> None:
+    target = str(address or "").strip().lower()
+    if not target:
+        return
+    with _ddg_aliases_lock:
+        used = _load_ddg_aliases()
+        used.add(target)
+        _save_ddg_aliases(used)
 
 
 ResultT = TypeVar("ResultT")
@@ -20,6 +61,8 @@ domain_lock = Lock()
 provider_lock = Lock()
 domain_index = 0
 provider_index = 0
+cloudmail_token_lock = Lock()
+cloudmail_token_cache: dict[str, tuple[str, float]] = {}
 
 
 def _config(mail_config: dict) -> dict:
@@ -28,6 +71,7 @@ def _config(mail_config: dict) -> dict:
         "wait_timeout": float(mail_config.get("wait_timeout") or 30),
         "wait_interval": float(mail_config.get("wait_interval") or 2),
         "user_agent": str(mail_config.get("user_agent") or "Mozilla/5.0"),
+        "proxy": str(mail_config.get("proxy") or "").strip(),
     }
 
 
@@ -50,6 +94,21 @@ def _next_domain(domains: list[str]) -> str:
         value = domains[domain_index % len(domains)]
         domain_index = (domain_index + 1) % len(domains)
         return value
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _create_session(conf: dict):
+    proxy = str(conf.get("proxy") or "").strip()
+    kwargs = {"impersonate": "chrome", "verify": False}
+    if proxy:
+        kwargs["proxy"] = proxy
+    return requests.Session(**kwargs)
 
 
 def _parse_received_at(value: Any) -> datetime | None:
@@ -208,7 +267,7 @@ class CloudflareTempMailProvider(BaseMailProvider):
         self.api_base = str(entry["api_base"]).rstrip("/")
         self.admin_password = str(entry["admin_password"]).strip()
         self.domain = entry.get("domain") or []
-        self.session = curl_requests.Session(impersonate="chrome")
+        self.session = _create_session(conf)
 
     def _request(self, method: str, path: str, headers: dict | None = None, params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200,)):
         resp = self.session.request(method.upper(), f"{self.api_base}{path}", headers={"Content-Type": "application/json", "User-Agent": self.conf["user_agent"], **(headers or {})}, params=params, json=payload, timeout=self.conf["request_timeout"], verify=False)
@@ -222,6 +281,15 @@ class CloudflareTempMailProvider(BaseMailProvider):
         token = str(data.get("jwt") or "").strip()
         if not address or not token:
             raise RuntimeError("CloudflareTempMail 缺少 address 或 jwt")
+        return {"provider": self.name, "provider_ref": self.provider_ref, "address": address, "token": token}
+
+    def get_existing_mailbox(self, email: str) -> dict[str, Any]:
+        """通过管理员密码获取已有邮箱地址的 JWT，用于查询邮件。"""
+        data = self._request("POST", "/admin/get_address", headers={"x-admin-auth": self.admin_password}, payload={"address": email})
+        address = str(data.get("address") or "").strip()
+        token = str(data.get("jwt") or "").strip()
+        if not address or not token:
+            raise RuntimeError(f"CloudflareTempMail 无法获取已有邮箱 {email} 的 JWT")
         return {"provider": self.name, "provider_ref": self.provider_ref, "address": address, "token": token}
 
     def fetch_latest_message(self, mailbox: dict[str, Any]) -> dict[str, Any] | None:
@@ -241,6 +309,247 @@ class CloudflareTempMailProvider(BaseMailProvider):
         self.session.close()
 
 
+class DDGMailProvider(BaseMailProvider):
+    name = "ddg_mail"
+
+    def __init__(self, entry: dict, conf: dict):
+        super().__init__(conf, str(entry.get("provider_ref") or ""))
+        self.label = str(entry.get("label") or self.provider_ref)
+        self.ddg_token = str(entry["ddg_token"]).strip()
+        self.cf_api_base = str(entry.get("api_base") or entry.get("cf_api_base") or "").rstrip("/")
+        self.cf_inbox_jwt = str(entry.get("cf_inbox_jwt") or "").strip()
+        self.cf_admin_password = str(entry.get("admin_password") or "").strip()
+        self.cf_api_key = str(entry.get("cf_api_key") or "").strip()
+        self.cf_auth_mode = str(entry.get("cf_auth_mode") or "none").strip().lower()
+        self.cf_domain = entry.get("cf_domain") or []
+        self.cf_create_path = str(entry.get("cf_create_path") or "/api/new_address").strip()
+        self.cf_messages_path = str(entry.get("cf_messages_path") or "/api/mails").strip()
+        self.session = _create_session(conf)
+
+    def _cf_build_headers(self, content_type: bool = False) -> dict:
+        headers = {"Content-Type": "application/json"} if content_type else {}
+        if self.cf_api_key:
+            if self.cf_auth_mode == "x-api-key":
+                headers["X-API-Key"] = self.cf_api_key
+            elif self.cf_auth_mode != "none":
+                headers["Authorization"] = f"Bearer {self.cf_api_key}"
+        return headers
+
+    def _cf_request(self, method: str, path: str, headers: dict | None = None, params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200,)) -> dict:
+        merged_headers = {**self._cf_build_headers(True), **(headers or {}), "User-Agent": self.conf["user_agent"]}
+        if self.cf_admin_password and method.upper() in ("POST",):
+            merged_headers["x-admin-auth"] = self.cf_admin_password
+        if self.cf_api_key and self.cf_auth_mode == "query-key":
+            params = {**(params or {}), "key": self.cf_api_key}
+        resp = self.session.request(method.upper(), f"{self.cf_api_base}{path}", headers=merged_headers, params=params, json=payload, timeout=self.conf["request_timeout"], verify=False)
+        if resp.status_code not in expected:
+            raise RuntimeError(f"DDGMail CF请求失败: {method} {path}, HTTP {resp.status_code}, body={resp.text[:300]}")
+        return {} if resp.status_code == 204 else resp.json()
+
+    def _ddg_request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        resp = self.session.request(method.upper(), f"https://quack.duckduckgo.com{path}", headers={"Authorization": f"Bearer {self.ddg_token}", "Content-Type": "application/json", "User-Agent": self.conf["user_agent"]}, json=payload, timeout=self.conf["request_timeout"], verify=False)
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(f"DDG API请求失败: {method} {path}, HTTP {resp.status_code}, body={resp.text[:300]}")
+        return resp.json()
+
+    def _cf_list_payload(self, data: Any) -> list:
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("results", "hydra:member", "data", "messages"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return value
+                if isinstance(value, dict) and isinstance(value.get("messages"), list):
+                    return value["messages"]
+        return []
+
+    def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
+        ddg_data = self._ddg_request("POST", "/api/email/addresses", payload={})
+        ddg_address_part = str(ddg_data.get("address") or "").strip()
+        if not ddg_address_part:
+            raise RuntimeError("DDG API 返回无 address 字段")
+        ddg_address = f"{ddg_address_part}@duck.com"
+
+        if _is_ddg_alias_duplicate(ddg_address):
+            raise RuntimeError(f"[{self.label}] DDG日上限已达，别名 {ddg_address} 已存在，自动切换邮箱提供商")
+
+        _record_ddg_alias(ddg_address)
+
+        if not self.cf_inbox_jwt:
+            raise RuntimeError("DDGMail 需要 cf_inbox_jwt（DDG 转发目标的固定收件箱 JWT），请在邮箱配置中填写 CF Inbox JWT")
+
+        return {"provider": self.name, "provider_ref": self.provider_ref, "address": ddg_address, "token": self.cf_inbox_jwt, "label": self.label}
+
+    def _parse_raw_recipient(self, raw_text: str) -> str:
+        if not raw_text:
+            return ""
+        match = re.search(r"^To:\s*(.+?)$", raw_text, re.MULTILINE | re.IGNORECASE)
+        if match:
+            addr = match.group(1).strip()
+            addr = re.sub(r"\s*<[^>]*>", "", addr)
+            return addr.strip().lower()
+        try:
+            parsed = message_from_string(raw_text, policy=policy.default)
+            return str(parsed.get("To") or "").strip().lower()
+        except Exception:
+            return ""
+
+    def fetch_latest_message(self, mailbox: dict[str, Any]) -> dict[str, Any] | None:
+        target_address = str(mailbox.get("address") or "").strip().lower()
+        data = self._cf_request("GET", self.cf_messages_path, headers={"Authorization": f"Bearer {mailbox['token']}"}, params={"limit": 30, "offset": 0})
+        raw_list = self._cf_list_payload(data)
+        messages = [item for item in raw_list if isinstance(item, dict)]
+        if not messages:
+            return None
+
+        for item in messages:
+            message_id = str(item.get("id") or item.get("msgid") or item.get("_id") or "")
+            raw_text = str(item.get("raw") or "")
+            raw_recipient = self._parse_raw_recipient(raw_text)
+            if target_address and raw_recipient and target_address not in raw_recipient:
+                continue
+            text_content, html_content = _extract_content(item)
+            subject = str(item.get("subject") or "")
+            sender = item.get("from") or item.get("sender") or item.get("source") or ""
+            if isinstance(sender, dict):
+                sender = sender.get("address") or sender.get("email") or sender.get("name") or ""
+            if raw_text and (not subject or not sender or subject == sender == ""):
+                try:
+                    parsed = message_from_string(raw_text, policy=policy.default)
+                    if not subject:
+                        subject = str(parsed.get("Subject") or "")
+                    if not sender:
+                        sender = str(parsed.get("From") or "")
+                except Exception:
+                    pass
+            return {"provider": self.name, "mailbox": mailbox["address"], "message_id": message_id, "subject": subject, "sender": str(sender), "text_content": text_content, "html_content": html_content, "received_at": _parse_received_at(item.get("createdAt") or item.get("created_at") or item.get("receivedAt") or item.get("date") or item.get("timestamp")), "raw": item}
+
+        return None
+
+    def close(self) -> None:
+        self.session.close()
+
+
+class CloudMailGenProvider(BaseMailProvider):
+    name = "cloudmail_gen"
+
+    def __init__(self, entry: dict, conf: dict):
+        super().__init__(conf, str(entry.get("provider_ref") or ""))
+        self.api_base = str(entry["api_base"]).rstrip("/")
+        self.admin_email = str(entry.get("admin_email") or "").strip()
+        self.admin_password = str(entry.get("admin_password") or "").strip()
+        self.domain = _normalize_string_list(entry.get("domain"))
+        self.subdomain = _normalize_string_list(entry.get("subdomain"))
+        self.email_prefix = str(entry.get("email_prefix") or "").strip()
+        self.session = _create_session(conf)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        headers: dict | None = None,
+        params: dict | None = None,
+        payload: dict | None = None,
+        expected: tuple[int, ...] = (200,),
+    ):
+        resp = self.session.request(
+            method.upper(),
+            f"{self.api_base}{path}",
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": self.conf["user_agent"],
+                **(headers or {}),
+            },
+            params=params,
+            json=payload,
+            timeout=self.conf["request_timeout"],
+            verify=False,
+        )
+        if resp.status_code not in expected:
+            raise RuntimeError(f"CloudMailGen 请求失败: {method} {path}, HTTP {resp.status_code}, body={resp.text[:300]}")
+        return {} if resp.status_code == 204 else resp.json()
+
+    def _cache_key(self) -> str:
+        return f"{self.api_base}|{self.admin_email}"
+
+    def _get_token(self) -> str:
+        if not self.admin_email or not self.admin_password:
+            raise RuntimeError("CloudMailGen 缺少 admin_email 或 admin_password")
+        cache_key = self._cache_key()
+        now = time.time()
+        with cloudmail_token_lock:
+            cached = cloudmail_token_cache.get(cache_key)
+            if cached and now < cached[1] - 300:
+                return cached[0]
+        data = self._request(
+            "POST",
+            "/api/public/genToken",
+            payload={"email": self.admin_email, "password": self.admin_password},
+        )
+        token = ""
+        if isinstance(data, dict) and data.get("code") == 200:
+            token = str((data.get("data") or {}).get("token") or "").strip()
+        if not token:
+            raise RuntimeError(f"CloudMailGen genToken 返回异常: {data}")
+        with cloudmail_token_lock:
+            cloudmail_token_cache[cache_key] = (token, now + 24 * 3600)
+        return token
+
+    def _resolve_address(self, username: str | None = None) -> str:
+        domain = _next_domain(self.domain)
+        if self.subdomain:
+            domain = f"{random.choice(self.subdomain)}.{domain}"
+        if username:
+            local_part = username
+        elif self.email_prefix:
+            local_part = f"{self.email_prefix}_{''.join(random.choices(string.ascii_lowercase + string.digits, k=6))}"
+        else:
+            local_part = _random_mailbox_name()
+        return f"{local_part}@{domain}"
+
+    def create_mailbox(self, username: str | None = None) -> dict[str, Any]:
+        if not self.domain:
+            raise RuntimeError("CloudMailGen 需要至少配置一个 domain")
+        address = self._resolve_address(username)
+        return {"provider": self.name, "provider_ref": self.provider_ref, "address": address}
+
+    def fetch_latest_message(self, mailbox: dict[str, Any]) -> dict[str, Any] | None:
+        address = str(mailbox.get("address") or "").strip()
+        if not address:
+            raise RuntimeError("CloudMailGen 缺少 address")
+        token = self._get_token()
+        data = self._request(
+            "POST",
+            "/api/public/emailList",
+            headers={"Authorization": token},
+            payload={"toEmail": address, "size": 20, "timeSort": "desc"},
+        )
+        items = (data.get("data") or []) if isinstance(data, dict) and data.get("code") == 200 else []
+        messages = [item for item in items if isinstance(item, dict) and _message_matches_email(item, address)]
+        if not messages:
+            return None
+        item = messages[0]
+        text_content, html_content = _extract_content(item)
+        return {
+            "provider": self.name,
+            "mailbox": address,
+            "message_id": str(item.get("id") or item.get("_id") or item.get("messageId") or ""),
+            "subject": str(item.get("subject") or ""),
+            "sender": str(item.get("from") or item.get("sender") or ""),
+            "text_content": text_content,
+            "html_content": html_content,
+            "received_at": _parse_received_at(
+                item.get("createdAt") or item.get("created_at") or item.get("receivedAt") or item.get("date") or item.get("timestamp")
+            ),
+            "to": item.get("to") or item.get("toEmail") or item.get("mailTo"),
+            "raw": item,
+        }
+
+    def close(self) -> None:
+        self.session.close()
+
+
 class TempMailLolProvider(BaseMailProvider):
     name = "tempmail_lol"
 
@@ -248,8 +557,7 @@ class TempMailLolProvider(BaseMailProvider):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
         self.api_key = str(entry.get("api_key") or "").strip()
         self.domain = [str(item).strip() for item in (entry.get("domain") or []) if str(item).strip()]
-        self.session = requests.Session()
-        self.session.trust_env = False
+        self.session = _create_session(conf)
         self.session.headers.update({"User-Agent": conf["user_agent"], "Accept": "application/json", "Content-Type": "application/json"})
         if self.api_key:
             self.session.headers["Authorization"] = f"Bearer {self.api_key}"
@@ -307,8 +615,7 @@ class DuckMailProvider(BaseMailProvider):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
         self.api_key = str(entry["api_key"]).strip()
         self.default_domain = str(entry.get("default_domain") or "duckmail.sbs").strip() or "duckmail.sbs"
-        self.session = requests.Session()
-        self.session.trust_env = False
+        self.session = _create_session(conf)
         self.session.headers.update({"User-Agent": conf["user_agent"], "Accept": "application/json", "Content-Type": "application/json"})
 
     def _request(self, method: str, path: str, token: str = "", use_api_key: bool = False, params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200, 201, 204)):
@@ -358,8 +665,7 @@ class GptMailProvider(BaseMailProvider):
         super().__init__(conf, str(entry.get("provider_ref") or ""))
         self.api_key = str(entry["api_key"]).strip()
         self.default_domain = str(entry.get("default_domain") or "").strip()
-        self.session = requests.Session()
-        self.session.trust_env = False
+        self.session = _create_session(conf)
         self.session.headers.update({"User-Agent": conf["user_agent"], "Accept": "application/json", "Content-Type": "application/json", "X-API-Key": self.api_key})
 
     def _request(self, method: str, path: str, params: dict | None = None, payload: dict | None = None):
@@ -402,7 +708,7 @@ class MoEmailProvider(BaseMailProvider):
         else:
             self.domain = [str(raw_domains).strip()] if str(raw_domains).strip() else []
         self.expiry_time = int(entry.get("expiry_time") or 0)
-        self.session = curl_requests.Session(impersonate="chrome")
+        self.session = _create_session(conf)
 
     def _request(self, method: str, path: str, params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200,)):
         resp = self.session.request(method.upper(), f"{self.api_base}{path}", headers={"X-API-Key": self.api_key, "Content-Type": "application/json", "User-Agent": self.conf["user_agent"]}, params=params, json=payload, timeout=self.conf["request_timeout"], verify=False)
@@ -456,8 +762,7 @@ class InbucketMailProvider(BaseMailProvider):
         else:
             self.domain = [str(raw_domains).strip()] if str(raw_domains).strip() else []
         self.random_subdomain = bool(entry.get("random_subdomain", True))
-        self.session = requests.Session()
-        self.session.trust_env = False
+        self.session = _create_session(conf)
         self.session.headers.update({
             "User-Agent": conf["user_agent"],
             "Accept": "application/json",
@@ -557,8 +862,7 @@ class YydsMailProvider(BaseMailProvider):
         self.domain = [str(item).strip() for item in (entry.get("domain") or []) if str(item).strip()]
         self.subdomain = str(entry.get("subdomain") or "").strip()
         self.wildcard = bool(entry.get("wildcard"))
-        self.session = requests.Session()
-        self.session.trust_env = False
+        self.session = _create_session(conf)
         self.session.headers.update({"User-Agent": conf["user_agent"], "Accept": "application/json", "Content-Type": "application/json"})
 
     def _request(self, method: str, path: str, token: str = "", params: dict | None = None, payload: dict | None = None, expected: tuple[int, ...] = (200, 201, 204)):
@@ -610,7 +914,16 @@ class YydsMailProvider(BaseMailProvider):
 
 
 def _entries(mail_config: dict) -> list[dict]:
-    return [{**item, "provider_ref": f"{item['type']}#{index + 1}"} for index, item in enumerate(mail_config["providers"])]
+    result: list[dict] = []
+    counters: dict[str, int] = {}
+    for item in mail_config["providers"]:
+        idx = len(result) + 1
+        t = item.get("type", "")
+        cnt = counters.get(t, 0) + 1
+        counters[t] = cnt
+        label = f"DDG-{cnt}" if t == "ddg_mail" else f"{t}#{idx}"
+        result.append({**item, "provider_ref": f"{item['type']}#{idx}", "label": label})
+    return result
 
 
 def _enabled_entries(mail_config: dict) -> list[dict]:
@@ -635,8 +948,12 @@ def _create_provider(mail_config: dict, provider: str = "", provider_ref: str = 
     entry = next((dict(item) for item in _entries(mail_config) if provider_ref and item["provider_ref"] == provider_ref), None)
     entry = entry or next((dict(item) for item in _enabled_entries(mail_config) if provider and item["type"] == provider), None) or _next_entry(mail_config)
     conf = _config(mail_config)
+    if entry["type"] == "cloudmail_gen":
+        return CloudMailGenProvider(entry, conf)
     if entry["type"] == "cloudflare_temp_email":
         return CloudflareTempMailProvider(entry, conf)
+    if entry["type"] == "ddg_mail":
+        return DDGMailProvider(entry, conf)
     if entry["type"] == "tempmail_lol":
         return TempMailLolProvider(entry, conf)
     if entry["type"] == "duckmail":
@@ -653,11 +970,25 @@ def _create_provider(mail_config: dict, provider: str = "", provider_ref: str = 
 
 
 def create_mailbox(mail_config: dict, username: str | None = None) -> dict:
-    provider = _create_provider(mail_config)
-    try:
-        return provider.create_mailbox(username)
-    finally:
-        provider.close()
+    enabled = _enabled_entries(mail_config)
+    tried: set[str] = set()
+    last_error = ""
+    for _ in range(len(enabled)):
+        provider = _create_provider(mail_config)
+        provider_key = f"{provider.name}#{provider.provider_ref}"
+        try:
+            if provider_key in tried:
+                continue
+            tried.add(provider_key)
+            mailbox = provider.create_mailbox(username)
+            return mailbox
+        except RuntimeError as error:
+            last_error = str(error)
+            if "DDG日上限已达" not in last_error:
+                raise
+        finally:
+            provider.close()
+    raise RuntimeError(last_error or "所有启用的邮箱提供商均无法创建邮箱")
 
 
 def wait_for_code(mail_config: dict, mailbox: dict) -> str | None:
@@ -666,3 +997,29 @@ def wait_for_code(mail_config: dict, mailbox: dict) -> str | None:
         return provider.wait_for_code(mailbox)
     finally:
         provider.close()
+
+
+def get_existing_mailbox(mail_config: dict, email: str) -> dict:
+    """通过管理员密码获取已有邮箱地址的 JWT，用于查询邮件。"""
+    enabled = _enabled_entries(mail_config)
+    tried: set[str] = set()
+    last_error = ""
+    for _ in range(len(enabled)):
+        provider = _create_provider(mail_config)
+        provider_key = f"{provider.name}#{provider.provider_ref}"
+        try:
+            if provider_key in tried:
+                continue
+            tried.add(provider_key)
+            if hasattr(provider, "get_existing_mailbox"):
+                mailbox = provider.get_existing_mailbox(email)
+                return mailbox
+            else:
+                raise RuntimeError(f"邮箱提供商 {provider.name} 不支持查询已有邮箱")
+        except RuntimeError as error:
+            last_error = str(error)
+            if "DDG日上限已达" not in last_error:
+                raise
+        finally:
+            provider.close()
+    raise RuntimeError(last_error or "所有启用的邮箱提供商均无法查询已有邮箱")
