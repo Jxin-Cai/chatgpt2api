@@ -106,6 +106,20 @@ class RegisterProxyRuntimeTests(unittest.TestCase):
         self.assertIn("status=403", str(ctx.exception))
         self.assertIn("Just a moment", str(ctx.exception))
 
+    def test_openai_html_behind_cloudflare_is_not_treated_as_challenge(self):
+        response = FakeResponse(
+            status_code=200,
+            text="""
+            <!DOCTYPE html><html lang=\"en-US\"><head>
+            <title>Create a password - OpenAI</title>
+            </head><body>OpenAI account page</body></html>
+            """,
+            headers={"server": "cloudflare", "content-type": "text/html; charset=utf-8"},
+            url="https://auth.openai.com/create-account/password",
+        )
+
+        self.assertFalse(openai_register._is_cloudflare_challenge(response))
+
     def test_cloudflare_challenge_refreshes_clearance_and_retries_once_with_matching_headers(self):
         bundle = ClearanceBundle(
             target_host="auth.openai.com",

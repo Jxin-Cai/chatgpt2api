@@ -197,11 +197,22 @@ def _is_cloudflare_challenge(resp) -> bool:
     text = str(getattr(resp, "text", "") or "").lower()
     headers = getattr(resp, "headers", {}) or {}
     server = str(headers.get("server") or "").lower()
-    return (
-        "cloudflare" in server
-        or "challenges.cloudflare.com" in text
+    try:
+        status_code = int(getattr(resp, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        status_code = 0
+
+    explicit_challenge_markers = (
+        "challenges.cloudflare.com" in text
         or "<title>just a moment" in text
+        or "/cdn-cgi/challenge-platform/" in text
+        or "cf-chl-" in text
+        or "__cf_chl_" in text
     )
+    if explicit_challenge_markers:
+        return True
+
+    return "cloudflare" in server and status_code in (403, 503)
 
 
 def create_mailbox(username: str | None = None) -> dict:
