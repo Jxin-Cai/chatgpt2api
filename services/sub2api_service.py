@@ -309,12 +309,12 @@ def list_remote_accounts(server: dict) -> list[dict]:
                 if not isinstance(account, dict):
                     continue
                 credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
-                access_token = _extract_access_token(credentials)
-                if not access_token:
-                    continue
                 account_id = account.get("id")
+                account_id = str(account_id) if account_id is not None else _clean(credentials.get("chatgpt_account_id"))
+                if not account_id:
+                    continue
                 items.append({
-                    "id": str(account_id) if account_id is not None else _clean(credentials.get("chatgpt_account_id")),
+                    "id": account_id,
                     "name": _clean(account.get("name")),
                     "email": _clean(credentials.get("email")) or _clean(account.get("name")),
                     "plan_type": _clean(credentials.get("plan_type")),
