@@ -305,7 +305,7 @@ export function Sub2APIConnections() {
       setSelectedIds([]);
       setAccountQuery("");
       setAccountPage(1);
-      setImportMethod(accounts.some((item) => item.has_access_token) ? "list_access_token" : "detail");
+      setImportMethod(accounts.length > 0 && accounts.every((item) => item.has_access_token) ? "list_access_token" : "detail");
       setBrowserOpen(true);
       toast.success(`读取成功，共 ${accounts.length} 个 OpenAI 账号`);
     } catch (error) {

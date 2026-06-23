@@ -236,14 +236,40 @@ def _auth_headers(server: dict) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
 
-def _extract_access_token(credentials: object) -> str:
-    if not isinstance(credentials, dict):
-        return ""
-    for key in ("access_token", "accessToken", "token"):
-        value = _clean(credentials.get(key))
-        if value:
-            return value
+def _as_dict(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _extract_credentials(account: dict) -> dict:
+    return _as_dict(account.get("credentials"))
+
+
+def _extract_access_token(value: object) -> str:
+    account = _as_dict(value)
+    credentials = _extract_credentials(account)
+    for container in (credentials, account):
+        for key in ("access_token", "accessToken", "token"):
+            token = _clean(container.get(key))
+            if token:
+                return token
     return ""
+
+
+def _extract_account(payload: object) -> dict:
+    account = _as_dict(_unwrap_envelope(payload))
+    for key in ("account", "item"):
+        nested = _as_dict(account.get(key))
+        if nested:
+            return nested
+    return account
 
 
 def _unwrap_envelope(payload: object) -> object:
@@ -306,23 +332,24 @@ def list_remote_accounts(server: dict, include_access_token: bool = False) -> li
             if not data:
                 break
 
-            for account in data:
-                if not isinstance(account, dict):
+            for raw_account in data:
+                account = _as_dict(raw_account)
+                if not account:
                     continue
-                credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+                credentials = _extract_credentials(account)
                 account_id = account.get("id")
                 account_id = str(account_id) if account_id is not None else _clean(credentials.get("chatgpt_account_id"))
                 if not account_id:
                     continue
-                access_token = _extract_access_token(credentials)
+                access_token = _extract_access_token(account)
                 item = {
                     "id": account_id,
                     "name": _clean(account.get("name")),
-                    "email": _clean(credentials.get("email")) or _clean(account.get("name")),
-                    "plan_type": _clean(credentials.get("plan_type")),
+                    "email": _clean(credentials.get("email")) or _clean(account.get("email")) or _clean(account.get("name")),
+                    "plan_type": _clean(credentials.get("plan_type")) or _clean(account.get("plan_type")),
                     "status": _clean(account.get("status")),
-                    "expires_at": _clean(credentials.get("expires_at")),
-                    "has_refresh_token": bool(_clean(credentials.get("refresh_token"))),
+                    "expires_at": _clean(credentials.get("expires_at")) or _clean(account.get("expires_at")),
+                    "has_refresh_token": bool(_clean(credentials.get("refresh_token")) or _clean(account.get("refresh_token"))),
                     "has_access_token": bool(access_token),
                 }
                 if include_access_token and access_token:
@@ -411,16 +438,14 @@ def _fetch_access_token_for_account(server: dict, account_id: str) -> tuple[str,
     finally:
         session.close()
 
-    account = _unwrap_envelope(payload)
-    if not isinstance(account, dict):
-        account = payload if isinstance(payload, dict) else {}
-    credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
-    access_token = _extract_access_token(credentials)
+    account = _extract_account(payload)
+    credentials = _extract_credentials(account)
+    access_token = _extract_access_token(account)
     if not access_token:
         raise RuntimeError("missing access_token")
     return access_token, {
-        "email": _clean(credentials.get("email")),
-        "plan_type": _clean(credentials.get("plan_type")),
+        "email": _clean(credentials.get("email")) or _clean(account.get("email")),
+        "plan_type": _clean(credentials.get("plan_type")) or _clean(account.get("plan_type")),
     }
 
 
@@ -550,10 +575,14 @@ class Sub2APIImportService:
                 self._append_error(server_id, account_id, "account not found")
             else:
                 access_token = _clean(account.get("_access_token"))
+                if not access_token:
+                    try:
+                        access_token, _meta = _fetch_access_token_for_account(server, account_id)
+                    except Exception as exc:
+                        self._append_error(server_id, account_id, str(exc) or "missing access_token")
+                        access_token = ""
                 if access_token:
                     tokens.append(access_token)
-                else:
-                    self._append_error(server_id, account_id, "missing access_token")
 
             current = self._config.get_import_job(server_id) or {}
             failed = len(current.get("errors") or [])

@@ -112,6 +112,89 @@ class Sub2APIServiceTest(unittest.TestCase):
         self.assertEqual(accounts[0]["_access_token"], "camel-token")
         self.assertEqual(accounts[1]["_access_token"], "short-token")
 
+    def test_list_remote_accounts_reads_top_level_and_json_credentials_tokens(self) -> None:
+        accounts, _session = self._list_accounts({
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "items": [
+                    {
+                        "id": "account-1",
+                        "email": "top@example.com",
+                        "access_token": "top-token",
+                    },
+                    {
+                        "id": "account-2",
+                        "credentials": '{"email":"json@example.com","access_token":"json-token"}',
+                    },
+                ],
+                "total": 2,
+            },
+        }, include_access_token=True)
+
+        self.assertEqual(accounts[0]["email"], "top@example.com")
+        self.assertEqual(accounts[0]["_access_token"], "top-token")
+        self.assertEqual(accounts[1]["email"], "json@example.com")
+        self.assertEqual(accounts[1]["_access_token"], "json-token")
+
+    def test_fetch_access_token_for_account_reads_nested_account_and_top_level_token(self) -> None:
+        session = _FakeSession({
+            "code": 0,
+            "message": "ok",
+            "data": {
+                "account": {
+                    "id": "account-1",
+                    "email": "user@example.com",
+                    "plan_type": "Plus",
+                    "accessToken": "detail-token",
+                }
+            },
+        })
+        with mock.patch.object(sub2api_service, "_auth_headers", return_value={"x-api-key": "test"}):
+            with mock.patch.object(sub2api_service, "Session", return_value=session):
+                token, meta = sub2api_service._fetch_access_token_for_account(
+                    {"base_url": "http://sub2api.test"},
+                    "account-1",
+                )
+
+        self.assertEqual(token, "detail-token")
+        self.assertEqual(meta["email"], "user@example.com")
+        self.assertEqual(meta["plan_type"], "Plus")
+
+    def test_run_import_from_list_tokens_falls_back_to_detail_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = sub2api_service.Sub2APIConfig(Path(temp_dir) / "sub2api_config.json")
+            server = config.add_server(name="", base_url="http://sub2api.test", email="", password="", api_key="key")
+            service = sub2api_service.Sub2APIImportService(config)
+            config.set_import_job(server["id"], {
+                "job_id": "job",
+                "status": "pending",
+                "created_at": "now",
+                "updated_at": "now",
+                "total": 2,
+                "completed": 0,
+                "added": 0,
+                "skipped": 0,
+                "refreshed": 0,
+                "failed": 0,
+                "errors": [],
+            })
+
+            with mock.patch.object(sub2api_service, "list_remote_accounts", return_value=[
+                {"id": "a", "_access_token": "token-a"},
+                {"id": "b"},
+            ]):
+                with mock.patch.object(sub2api_service, "_fetch_access_token_for_account", return_value=("token-b", {})) as detail_mock:
+                    with mock.patch.object(sub2api_service.account_service, "add_accounts", return_value={"added": 2, "skipped": 0, "items": []}) as add_mock:
+                        with mock.patch.object(sub2api_service.account_service, "refresh_accounts", return_value={"refreshed": 2, "errors": [], "items": []}):
+                            service._run_import_from_list_tokens(server["id"], server, ["a", "b"])
+
+            detail_mock.assert_called_once_with(server, "b")
+            add_mock.assert_called_once_with(["token-a", "token-b"], source_type="codex")
+            job = config.get_import_job(server["id"])
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(job["failed"], 0)
+
     def test_run_import_from_list_tokens_imports_without_detail_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = sub2api_service.Sub2APIConfig(Path(temp_dir) / "sub2api_config.json")
@@ -173,9 +256,10 @@ class Sub2APIServiceTest(unittest.TestCase):
                 {"id": "a", "_access_token": "token-a"},
                 {"id": "b"},
             ]):
-                with mock.patch.object(sub2api_service.account_service, "add_accounts", return_value={"added": 1, "skipped": 0, "items": []}) as add_mock:
-                    with mock.patch.object(sub2api_service.account_service, "refresh_accounts", return_value={"refreshed": 1, "errors": [], "items": []}):
-                        service._run_import_from_list_tokens(server["id"], server, ["a", "b", "c"])
+                with mock.patch.object(sub2api_service, "_fetch_access_token_for_account", side_effect=RuntimeError("missing access_token")):
+                    with mock.patch.object(sub2api_service.account_service, "add_accounts", return_value={"added": 1, "skipped": 0, "items": []}) as add_mock:
+                        with mock.patch.object(sub2api_service.account_service, "refresh_accounts", return_value={"refreshed": 1, "errors": [], "items": []}):
+                            service._run_import_from_list_tokens(server["id"], server, ["a", "b", "c"])
 
             add_mock.assert_called_once_with(["token-a"], source_type="codex")
             job = config.get_import_job(server["id"])
