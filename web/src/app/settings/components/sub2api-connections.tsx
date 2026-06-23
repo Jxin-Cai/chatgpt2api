@@ -48,6 +48,7 @@ import {
   fetchSub2APIServers,
   startSub2APIImport,
   updateSub2APIServer,
+  type Sub2APIImportMethod,
   type Sub2APIRemoteAccount,
   type Sub2APIRemoteGroup,
   type Sub2APIServer,
@@ -74,6 +75,7 @@ function normalizeAccounts(items: Sub2APIRemoteAccount[]) {
       status: String(item.status || "").trim(),
       expires_at: String(item.expires_at || "").trim(),
       has_refresh_token: Boolean(item.has_refresh_token),
+      has_access_token: Boolean(item.has_access_token),
     });
   }
   return accounts;
@@ -111,6 +113,7 @@ export function Sub2APIConnections() {
   const [accountQuery, setAccountQuery] = useState("");
   const [accountPage, setAccountPage] = useState(1);
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>("100");
+  const [importMethod, setImportMethod] = useState<Sub2APIImportMethod>("detail");
   const [isStartingImport, setIsStartingImport] = useState(false);
 
   const loadServers = async () => {
@@ -302,6 +305,7 @@ export function Sub2APIConnections() {
       setSelectedIds([]);
       setAccountQuery("");
       setAccountPage(1);
+      setImportMethod(accounts.some((item) => item.has_access_token) ? "list_access_token" : "detail");
       setBrowserOpen(true);
       toast.success(`读取成功，共 ${accounts.length} 个 OpenAI 账号`);
     } catch (error) {
@@ -365,7 +369,7 @@ export function Sub2APIConnections() {
 
     setIsStartingImport(true);
     try {
-      const result = await startSub2APIImport(browserServer.id, selectedIds);
+      const result = await startSub2APIImport(browserServer.id, selectedIds, importMethod);
       setServers((prev) =>
         prev.map((server) =>
           server.id === browserServer.id ? { ...server, import_job: result.import_job } : server,
@@ -540,9 +544,9 @@ export function Sub2APIConnections() {
             <p className="font-medium text-stone-600">使用说明</p>
             <ul className="mt-1 list-inside list-disc space-y-0.5">
               <li>输入 Sub2API 地址和管理员账户（或 Admin API Key），保存为一个连接。</li>
-              <li>点击某个连接的「同步」会拉取其中 platform=openai 且 type=oauth 的账号列表。</li>
-              <li>勾选需要的账号后后端会并发拉取 access_token，自动导入本地号池并刷新状态。</li>
-              <li>仅会读取 sub2api 凭据中的 access_token；refresh_token 等字段不会写入本地。</li>
+              <li>点击某个连接的「同步」会拉取其中 platform=openai 且 type=oauth 的账号列表，并识别列表中是否包含 access_token。</li>
+              <li>可选择按列表识别 Access Token 导入，或使用账号详情拉取的兼容模式。</li>
+              <li>access_token 不会返回给浏览器；本地仅写入 Access Token，refresh_token 等字段不会写入本地。</li>
             </ul>
           </div>
         </CardContent>
@@ -750,7 +754,16 @@ export function Sub2APIConnections() {
                 className="h-10 rounded-xl border-stone-200 bg-white pl-10"
               />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={importMethod} onValueChange={(value) => setImportMethod(value as Sub2APIImportMethod)}>
+                <SelectTrigger className="h-10 w-[260px] rounded-xl border-stone-200 bg-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="list_access_token">列表识别 Access Token</SelectItem>
+                  <SelectItem value="detail">账号详情拉取 Access Token</SelectItem>
+                </SelectContent>
+              </Select>
               <Select
                 value={pageSize}
                 onValueChange={(value) => {
@@ -820,6 +833,12 @@ export function Sub2APIConnections() {
                               {item.status}
                             </Badge>
                           ) : null}
+                          <Badge
+                            variant={item.has_access_token ? "success" : "info"}
+                            className="rounded-md"
+                          >
+                            {item.has_access_token ? "可列表导入" : "需详情拉取"}
+                          </Badge>
                         </div>
                         <div className="truncate text-xs text-stone-400">
                           id {item.id}

@@ -113,6 +113,7 @@ class Sub2APIServerUpdateRequest(BaseModel):
 
 class Sub2APIImportRequest(BaseModel):
     account_ids: list[str] = Field(default_factory=list)
+    import_method: Literal["detail", "list_access_token"] = "detail"
 
 
 class OAuthLoginStartRequest(BaseModel):
@@ -546,7 +547,7 @@ def create_router() -> APIRouter:
         if server is None:
             raise HTTPException(status_code=404, detail={"error": "server not found"})
         try:
-            job = sub2api_import_service.start_import(server, body.account_ids)
+            job = sub2api_import_service.start_import(server, body.account_ids, import_method=body.import_method)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         return {"import_job": job}

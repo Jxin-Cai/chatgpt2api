@@ -54,6 +54,7 @@ def _normalize_import_job(raw: object, *, fail_unfinished: bool) -> dict | None:
         "refreshed": int(raw.get("refreshed") or 0),
         "failed": int(raw.get("failed") or 0),
         "errors": raw.get("errors") if isinstance(raw.get("errors"), list) else [],
+        "import_method": _clean(raw.get("import_method")),
     }
 
 
@@ -269,7 +270,7 @@ def _extract_paged_items(payload: object) -> tuple[list, int]:
     return [], 0
 
 
-def list_remote_accounts(server: dict) -> list[dict]:
+def list_remote_accounts(server: dict, include_access_token: bool = False) -> list[dict]:
     """Return a flat list of OpenAI OAuth accounts from a sub2api server."""
     base_url = _clean(server.get("base_url"))
     if not base_url:
@@ -313,7 +314,8 @@ def list_remote_accounts(server: dict) -> list[dict]:
                 account_id = str(account_id) if account_id is not None else _clean(credentials.get("chatgpt_account_id"))
                 if not account_id:
                     continue
-                items.append({
+                access_token = _extract_access_token(credentials)
+                item = {
                     "id": account_id,
                     "name": _clean(account.get("name")),
                     "email": _clean(credentials.get("email")) or _clean(account.get("name")),
@@ -321,7 +323,11 @@ def list_remote_accounts(server: dict) -> list[dict]:
                     "status": _clean(account.get("status")),
                     "expires_at": _clean(credentials.get("expires_at")),
                     "has_refresh_token": bool(_clean(credentials.get("refresh_token"))),
-                })
+                    "has_access_token": bool(access_token),
+                }
+                if include_access_token and access_token:
+                    item["_access_token"] = access_token
+                items.append(item)
 
             if page * 200 >= total or len(data) < 200:
                 break
@@ -422,10 +428,12 @@ class Sub2APIImportService:
     def __init__(self, sub2api_config: Sub2APIConfig):
         self._config = sub2api_config
 
-    def start_import(self, server: dict, account_ids: list[str]) -> dict:
+    def start_import(self, server: dict, account_ids: list[str], import_method: str = "detail") -> dict:
         ids = [_clean(item) for item in account_ids if _clean(item)]
         if not ids:
             raise ValueError("account ids is required")
+        if import_method not in {"detail", "list_access_token"}:
+            raise ValueError("unsupported import method")
 
         server_id = _clean(server.get("id"))
         job = {
@@ -440,13 +448,15 @@ class Sub2APIImportService:
             "refreshed": 0,
             "failed": 0,
             "errors": [],
+            "import_method": import_method,
         }
         saved = self._config.set_import_job(server_id, job)
         if saved is None:
             raise ValueError("server not found")
 
+        target = self._run_import_from_list_tokens if import_method == "list_access_token" else self._run_import
         thread = threading.Thread(
-            target=self._run_import,
+            target=target,
             args=(server_id, server, ids),
             name=f"sub2api-import-{server_id}",
             daemon=True,
@@ -468,6 +478,31 @@ class Sub2APIImportService:
         errors = list(current.get("errors") or [])
         errors.append({"name": account_id, "error": message})
         self._update_job(server_id, errors=errors, failed=len(errors))
+
+    def _finalize_token_import(self, server_id: str, tokens: list[str], total: int) -> None:
+        tokens = list(dict.fromkeys(_clean(token) for token in tokens if _clean(token)))
+        current = self._config.get_import_job(server_id) or {}
+        if not tokens:
+            self._update_job(
+                server_id,
+                status="failed",
+                completed=total,
+                failed=len(current.get("errors") or []),
+            )
+            return
+
+        add_result = account_service.add_accounts(tokens, source_type="codex")
+        refresh_result = account_service.refresh_accounts(tokens)
+        current = self._config.get_import_job(server_id) or {}
+        self._update_job(
+            server_id,
+            status="completed",
+            completed=total,
+            added=int(add_result.get("added") or 0),
+            skipped=int(add_result.get("skipped") or 0),
+            refreshed=int(refresh_result.get("refreshed") or 0),
+            failed=len(current.get("errors") or []),
+        )
 
     def _run_import(self, server_id: str, server: dict, account_ids: list[str]) -> None:
         self._update_job(server_id, status="running")
@@ -495,28 +530,40 @@ class Sub2APIImportService:
                     failed=failed,
                 )
 
-        if not tokens:
-            current = self._config.get_import_job(server_id) or {}
-            self._update_job(
-                server_id,
-                status="failed",
-                completed=int(current.get("total") or 0),
-                failed=len(current.get("errors") or []),
-            )
+        self._finalize_token_import(server_id, tokens, len(account_ids))
+
+    def _run_import_from_list_tokens(self, server_id: str, server: dict, account_ids: list[str]) -> None:
+        self._update_job(server_id, status="running")
+
+        try:
+            remote_accounts = list_remote_accounts(server, include_access_token=True)
+        except Exception as exc:
+            self._append_error(server_id, "accounts", str(exc) or "unknown error")
+            self._finalize_token_import(server_id, [], len(account_ids))
             return
 
-        add_result = account_service.add_accounts(tokens, source_type="codex")
-        refresh_result = account_service.refresh_accounts(tokens)
-        current = self._config.get_import_job(server_id) or {}
-        self._update_job(
-            server_id,
-            status="completed",
-            completed=len(account_ids),
-            added=int(add_result.get("added") or 0),
-            skipped=int(add_result.get("skipped") or 0),
-            refreshed=int(refresh_result.get("refreshed") or 0),
-            failed=len(current.get("errors") or []),
-        )
+        account_map = {str(item.get("id") or ""): item for item in remote_accounts if isinstance(item, dict)}
+        tokens: list[str] = []
+        for account_id in account_ids:
+            account = account_map.get(account_id)
+            if account is None:
+                self._append_error(server_id, account_id, "account not found")
+            else:
+                access_token = _clean(account.get("_access_token"))
+                if access_token:
+                    tokens.append(access_token)
+                else:
+                    self._append_error(server_id, account_id, "missing access_token")
+
+            current = self._config.get_import_job(server_id) or {}
+            failed = len(current.get("errors") or [])
+            self._update_job(
+                server_id,
+                completed=int(current.get("completed") or 0) + 1,
+                failed=failed,
+            )
+
+        self._finalize_token_import(server_id, tokens, len(account_ids))
 
 
 sub2api_config = Sub2APIConfig(SUB2API_CONFIG_FILE)

@@ -877,6 +877,8 @@ export type Sub2APIServer = {
   import_job?: CPAImportJob | null;
 };
 
+export type Sub2APIImportMethod = "detail" | "list_access_token";
+
 export type Sub2APIRemoteAccount = {
   id: string;
   name: string;
@@ -885,6 +887,7 @@ export type Sub2APIRemoteAccount = {
   status: string;
   expires_at: string;
   has_refresh_token: boolean;
+  has_access_token: boolean;
 };
 
 export type Sub2APIRemoteGroup = {
@@ -950,10 +953,14 @@ export async function fetchSub2APIServerAccounts(serverId: string) {
   );
 }
 
-export async function startSub2APIImport(serverId: string, accountIds: string[]) {
+export async function startSub2APIImport(
+  serverId: string,
+  accountIds: string[],
+  importMethod: Sub2APIImportMethod = "detail",
+) {
   return httpRequest<{ import_job: CPAImportJob | null }>(`/api/sub2api/servers/${serverId}/import`, {
     method: "POST",
-    body: { account_ids: accountIds },
+    body: { account_ids: accountIds, import_method: importMethod },
   });
 }
 
