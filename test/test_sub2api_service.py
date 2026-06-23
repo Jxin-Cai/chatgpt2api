@@ -31,6 +31,19 @@ class _FakeSession:
         pass
 
 
+class _FakeSequenceSession:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.requests = []
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        self.requests.append({"url": url, "headers": headers, "params": params, "timeout": timeout})
+        return _FakeResponse(self.payloads.pop(0))
+
+    def close(self):
+        pass
+
+
 class Sub2APIServiceTest(unittest.TestCase):
     def _list_accounts(self, payload, **kwargs):
         session = _FakeSession(payload)
@@ -160,6 +173,50 @@ class Sub2APIServiceTest(unittest.TestCase):
         self.assertEqual(token, "detail-token")
         self.assertEqual(meta["email"], "user@example.com")
         self.assertEqual(meta["plan_type"], "Plus")
+
+    def test_fetch_access_token_for_account_falls_back_to_export_data(self) -> None:
+        session = _FakeSequenceSession([
+            {
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "id": "account-1",
+                    "email": "redacted@example.com",
+                    "credentials": {"email": "redacted@example.com"},
+                },
+            },
+            {
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "accounts": [
+                        {
+                            "name": "user@example.com",
+                            "platform": "openai",
+                            "type": "oauth",
+                            "credentials": {
+                                "email": "user@example.com",
+                                "plan_type": "Pro",
+                                "access_token": "export-token",
+                            },
+                        }
+                    ],
+                    "proxies": [],
+                },
+            },
+        ])
+        with mock.patch.object(sub2api_service, "_auth_headers", return_value={"x-api-key": "test"}):
+            with mock.patch.object(sub2api_service, "Session", return_value=session):
+                token, meta = sub2api_service._fetch_access_token_for_account(
+                    {"base_url": "http://sub2api.test"},
+                    "account-1",
+                )
+
+        self.assertEqual(token, "export-token")
+        self.assertEqual(meta["email"], "user@example.com")
+        self.assertEqual(meta["plan_type"], "Pro")
+        self.assertEqual(session.requests[1]["url"], "http://sub2api.test/api/v1/admin/accounts/data")
+        self.assertEqual(session.requests[1]["params"], {"ids": "account-1", "include_proxies": "false"})
 
     def test_run_import_from_list_tokens_falls_back_to_detail_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

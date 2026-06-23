@@ -420,6 +420,46 @@ def list_remote_groups(server: dict) -> list[dict]:
     return items
 
 
+def _account_token_result(account: dict) -> tuple[str, dict]:
+    credentials = _extract_credentials(account)
+    access_token = _extract_access_token(account)
+    if not access_token:
+        raise RuntimeError("missing access_token")
+    return access_token, {
+        "email": _clean(credentials.get("email")) or _clean(account.get("email")),
+        "plan_type": _clean(credentials.get("plan_type")) or _clean(account.get("plan_type")),
+    }
+
+
+def _fetch_access_token_from_export(server: dict, account_id: str) -> tuple[str, dict]:
+    base_url = _clean(server.get("base_url"))
+    headers = _auth_headers(server)
+
+    session = Session(verify=True)
+    try:
+        response = session.get(
+            f"{base_url.rstrip('/')}/api/v1/admin/accounts/data",
+            headers=headers,
+            params={"ids": account_id, "include_proxies": "false"},
+            timeout=30,
+        )
+        if not response.ok:
+            raise RuntimeError(f"export HTTP {response.status_code}")
+        payload = response.json()
+    finally:
+        session.close()
+
+    data = _as_dict(_unwrap_envelope(payload))
+    accounts = data.get("accounts")
+    if not isinstance(accounts, list):
+        raise RuntimeError("export accounts payload is invalid")
+    for account in accounts:
+        normalized = _as_dict(account)
+        if normalized:
+            return _account_token_result(normalized)
+    raise RuntimeError("account not found in export")
+
+
 def _fetch_access_token_for_account(server: dict, account_id: str) -> tuple[str, dict]:
     """Return (access_token, account_meta) for a single sub2api account id."""
     base_url = _clean(server.get("base_url"))
@@ -439,14 +479,12 @@ def _fetch_access_token_for_account(server: dict, account_id: str) -> tuple[str,
         session.close()
 
     account = _extract_account(payload)
-    credentials = _extract_credentials(account)
-    access_token = _extract_access_token(account)
-    if not access_token:
-        raise RuntimeError("missing access_token")
-    return access_token, {
-        "email": _clean(credentials.get("email")) or _clean(account.get("email")),
-        "plan_type": _clean(credentials.get("plan_type")) or _clean(account.get("plan_type")),
-    }
+    try:
+        return _account_token_result(account)
+    except RuntimeError as exc:
+        if str(exc) != "missing access_token":
+            raise
+    return _fetch_access_token_from_export(server, account_id)
 
 
 class Sub2APIImportService:
