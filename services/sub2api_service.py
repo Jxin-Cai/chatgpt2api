@@ -331,15 +331,18 @@ def list_remote_accounts(server: dict, include_access_token: bool = False) -> li
             if not data:
                 break
 
-            for account in data:
-                if not isinstance(account, dict):
+            for raw_account in data:
+                account = _as_dict(raw_account)
+                if not account:
                     continue
-                credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+                credentials = _extract_credentials(account)
                 account_id = account.get("id")
-                if account_id is None:
+                account_id = str(account_id) if account_id is not None else _clean(credentials.get("chatgpt_account_id"))
+                if not account_id:
                     continue
-                items.append({
-                    "id": str(account_id),
+                access_token = _extract_access_token(account)
+                item = {
+                    "id": account_id,
                     "name": _clean(account.get("name")),
                     "email": _clean(credentials.get("email")) or _clean(account.get("email")) or _clean(account.get("name")),
                     "plan_type": _clean(credentials.get("plan_type")) or _clean(account.get("plan_type")),
