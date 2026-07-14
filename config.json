@@ -58,7 +58,6 @@
     "passphrase": "",
     "include": {
       "config": true,
-      "register": true,
       "cpa": true,
       "sub2api": true,
       "logs": true,
@@ -102,5 +101,6 @@
       "enabled": true,
       "url": "https://canvas.best"
     }
-  }
+  },
+  "image_remove_conversation_after_result": true
 }

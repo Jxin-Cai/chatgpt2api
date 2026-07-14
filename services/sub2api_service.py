@@ -6,7 +6,6 @@ import json
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -332,18 +331,15 @@ def list_remote_accounts(server: dict, include_access_token: bool = False) -> li
             if not data:
                 break
 
-            for raw_account in data:
-                account = _as_dict(raw_account)
-                if not account:
+            for account in data:
+                if not isinstance(account, dict):
                     continue
-                credentials = _extract_credentials(account)
+                credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
                 account_id = account.get("id")
-                account_id = str(account_id) if account_id is not None else _clean(credentials.get("chatgpt_account_id"))
-                if not account_id:
+                if account_id is None:
                     continue
-                access_token = _extract_access_token(account)
-                item = {
-                    "id": account_id,
+                items.append({
+                    "id": str(account_id),
                     "name": _clean(account.get("name")),
                     "email": _clean(credentials.get("email")) or _clean(account.get("email")) or _clean(account.get("name")),
                     "plan_type": _clean(credentials.get("plan_type")) or _clean(account.get("plan_type")),
@@ -420,56 +416,20 @@ def list_remote_groups(server: dict) -> list[dict]:
     return items
 
 
-def _account_token_result(account: dict) -> tuple[str, dict]:
-    credentials = _extract_credentials(account)
-    access_token = _extract_access_token(account)
-    if not access_token:
-        raise RuntimeError("missing access_token")
-    return access_token, {
-        "email": _clean(credentials.get("email")) or _clean(account.get("email")),
-        "plan_type": _clean(credentials.get("plan_type")) or _clean(account.get("plan_type")),
-    }
-
-
-def _fetch_access_token_from_export(server: dict, account_id: str) -> tuple[str, dict]:
+def _fetch_access_tokens_for_accounts(server: dict, account_ids: list[str]) -> tuple[list[str], list[dict]]:
+    """Return exported access tokens and per-account errors from sub2api."""
     base_url = _clean(server.get("base_url"))
     headers = _auth_headers(server)
+    ids = [_clean(item) for item in account_ids if _clean(item)]
+    if not ids:
+        return [], []
 
     session = Session(verify=True)
     try:
         response = session.get(
             f"{base_url.rstrip('/')}/api/v1/admin/accounts/data",
             headers=headers,
-            params={"ids": account_id, "include_proxies": "false"},
-            timeout=30,
-        )
-        if not response.ok:
-            raise RuntimeError(f"export HTTP {response.status_code}")
-        payload = response.json()
-    finally:
-        session.close()
-
-    data = _as_dict(_unwrap_envelope(payload))
-    accounts = data.get("accounts")
-    if not isinstance(accounts, list):
-        raise RuntimeError("export accounts payload is invalid")
-    for account in accounts:
-        normalized = _as_dict(account)
-        if normalized:
-            return _account_token_result(normalized)
-    raise RuntimeError("account not found in export")
-
-
-def _fetch_access_token_for_account(server: dict, account_id: str) -> tuple[str, dict]:
-    """Return (access_token, account_meta) for a single sub2api account id."""
-    base_url = _clean(server.get("base_url"))
-    headers = _auth_headers(server)
-
-    session = Session(verify=True)
-    try:
-        response = session.get(
-            f"{base_url.rstrip('/')}/api/v1/admin/accounts/{account_id}",
-            headers=headers,
+            params={"ids": ",".join(ids), "timezone": "Asia/Shanghai"},
             timeout=30,
         )
         if not response.ok:
@@ -478,13 +438,28 @@ def _fetch_access_token_for_account(server: dict, account_id: str) -> tuple[str,
     finally:
         session.close()
 
-    account = _extract_account(payload)
-    try:
-        return _account_token_result(account)
-    except RuntimeError as exc:
-        if str(exc) != "missing access_token":
-            raise
-    return _fetch_access_token_from_export(server, account_id)
+    data = _unwrap_envelope(payload)
+    accounts = data.get("accounts") if isinstance(data, dict) else None
+    if not isinstance(accounts, list):
+        raise RuntimeError("invalid export payload")
+
+    tokens: list[str] = []
+    errors: list[dict] = []
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+        token = _extract_access_token(credentials)
+        account_id = _clean(account.get("id")) or _clean(credentials.get("chatgpt_account_id")) or _clean(account.get("name"))
+        if token:
+            tokens.append(token)
+        else:
+            errors.append({"name": account_id or _clean(account.get("name")) or "unknown", "error": "missing access_token"})
+
+    if len(accounts) < len(ids):
+        errors.append({"name": ",".join(ids), "error": f"exported {len(accounts)}/{len(ids)} accounts"})
+
+    return tokens, errors
 
 
 class Sub2APIImportService:
@@ -570,28 +545,23 @@ class Sub2APIImportService:
     def _run_import(self, server_id: str, server: dict, account_ids: list[str]) -> None:
         self._update_job(server_id, status="running")
 
-        tokens: list[str] = []
-        max_workers = min(8, max(1, len(account_ids)))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {
-                executor.submit(_fetch_access_token_for_account, server, account_id): account_id
-                for account_id in account_ids
-            }
-            for future in as_completed(future_map):
-                account_id = future_map[future]
-                try:
-                    token, _meta = future.result()
-                    tokens.append(token)
-                except Exception as exc:
-                    self._append_error(server_id, account_id, str(exc) or "unknown error")
+        try:
+            tokens, errors = _fetch_access_tokens_for_accounts(server, account_ids)
+        except Exception as exc:
+            message = str(exc) or "unknown error"
+            for account_id in account_ids:
+                self._append_error(server_id, account_id, message)
+            tokens = []
+        else:
+            for error in errors:
+                self._append_error(server_id, _clean(error.get("name")), _clean(error.get("error")) or "unknown error")
 
-                current = self._config.get_import_job(server_id) or {}
-                failed = len(current.get("errors") or [])
-                self._update_job(
-                    server_id,
-                    completed=int(current.get("completed") or 0) + 1,
-                    failed=failed,
-                )
+        current = self._config.get_import_job(server_id) or {}
+        self._update_job(
+            server_id,
+            completed=len(account_ids),
+            failed=len(current.get("errors") or []),
+        )
 
         self._finalize_token_import(server_id, tokens, len(account_ids))
 
