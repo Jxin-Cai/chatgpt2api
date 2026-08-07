@@ -34,6 +34,10 @@ const VOICES = [
   { value: "fathom", label: "Arbor (随和多才)" },
 ];
 
+// 首包先积累少量音频再播放，吸收公网 WebSocket 和浏览器主线程抖动。
+const PLAYBACK_BUFFER_SECONDS = 0.14;
+const PLAYBACK_LOW_WATER_SECONDS = 0.04;
+
 function ts() {
   return new Date().toLocaleTimeString("en-US", { hour12: false, fractionalSecondDigits: 2 });
 }
@@ -112,6 +116,7 @@ export function RealtimePanel() {
   const playAudio = useCallback((pcmBuffer: ArrayBuffer) => {
     if (!audioCtxRef.current) audioCtxRef.current = new AudioContext({ sampleRate: 48000 });
     const ctx = audioCtxRef.current;
+    if (ctx.state === "suspended") void ctx.resume();
     const samples = new Int16Array(pcmBuffer);
     const float32 = new Float32Array(samples.length);
     for (let i = 0; i < samples.length; i++) float32[i] = samples[i] / 32768;
@@ -123,7 +128,9 @@ export function RealtimePanel() {
     source.connect(ctx.destination);
 
     const now = ctx.currentTime;
-    if (playbackTimeRef.current < now) playbackTimeRef.current = now;
+    if (playbackTimeRef.current < now + PLAYBACK_LOW_WATER_SECONDS) {
+      playbackTimeRef.current = now + PLAYBACK_BUFFER_SECONDS;
+    }
     source.start(playbackTimeRef.current);
     playbackTimeRef.current += buffer.duration;
   }, []);
@@ -230,6 +237,7 @@ export function RealtimePanel() {
     try {
       if (!audioCtxRef.current) audioCtxRef.current = new AudioContext({ sampleRate: 48000 });
       const ctx = audioCtxRef.current;
+      await ctx.resume();
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { sampleRate: 48000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });

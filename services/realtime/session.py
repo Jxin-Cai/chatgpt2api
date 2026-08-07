@@ -323,6 +323,18 @@ class RealtimeSession:
         silence_count = 0
         speaking = False
         next_send_at: float | None = None
+        # 将 5 个 20ms 帧合并为约 100ms 的 WS 消息，降低 JSON/base64 和浏览器
+        # AudioBufferSourceNode 的调度频率，也给网络抖动留出缓冲空间。
+        output_buffer = bytearray()
+        output_chunk_bytes = int(SAMPLE_RATE * 0.1) * 2
+
+        async def flush_output(force: bool = False) -> None:
+            if not output_buffer or (not force and len(output_buffer) < output_chunk_bytes):
+                return
+            audio_b64 = base64.b64encode(output_buffer).decode("ascii")
+            output_buffer.clear()
+            await self._send_event("response.audio.delta", {"delta": audio_b64})
+
         while not self._closed:
             try:
                 frame = await asyncio.wait_for(track.recv(), timeout=5)
@@ -359,6 +371,7 @@ class RealtimeSession:
                 # 说话段中保留最多 500ms 静音，维持词句的正确时间关系；空闲
                 # 静音则不推送，避免客户端永久累积播放队列。
                 if silence_count > 25:
+                    await flush_output(force=True)
                     speaking = False
                     silence_count = 0
                     next_send_at = None
@@ -374,8 +387,10 @@ class RealtimeSession:
                     next_send_at = max(next_send_at + frame_duration, now)
                     await asyncio.sleep(max(0.0, next_send_at - now))
 
-                audio_b64 = base64.b64encode(pcm_bytes).decode("ascii")
-                await self._send_event("response.audio.delta", {"delta": audio_b64})
+                output_buffer.extend(pcm_bytes)
+                await flush_output()
+
+        await flush_output(force=True)
 
     async def _dc_reader(self) -> None:
         """读取 DataChannel 消息并转发给客户端。"""

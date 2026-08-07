@@ -22,7 +22,7 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
 
     kind = "audio"
 
-    def __init__(self, queue_max: int = 300):
+    def __init__(self, queue_max: int = 15):
         super().__init__()
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=queue_max)
         self._pts = 0
