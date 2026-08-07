@@ -132,8 +132,15 @@ class RealtimeSession:
             await self._send_event("session.updated", {"session": {"voice": self._voice}})
 
         elif event_type == "response.cancel":
-            if self._data_channel and self._data_channel.readyState == "open":
-                self._data_channel.send(json.dumps({"type": "response.cancel"}))
+            self._send_to_dc({"type": "response.cancel"})
+
+        elif event_type in ("conversation.item.create", "response.create",
+                            "conversation.item.delete", "conversation.item.truncate"):
+            self._send_to_dc(event)
+
+    def _send_to_dc(self, event: dict) -> None:
+        if self._data_channel and self._data_channel.readyState == "open":
+            self._data_channel.send(json.dumps(event))
 
     async def _audio_sender(self) -> None:
         """从 ChatGPT 的远端音频轨道读取帧，编码为 base64 发送给客户端。"""
