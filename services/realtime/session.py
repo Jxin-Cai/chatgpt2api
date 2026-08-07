@@ -116,8 +116,13 @@ class RealtimeSession:
                 try:
                     pcm_data = base64.b64decode(audio_b64)
                     self._input_track.push_pcm16(pcm_data)
-                except Exception:
-                    pass
+                    if not hasattr(self, "_audio_log_count"):
+                        self._audio_log_count = 0
+                    self._audio_log_count += 1
+                    if self._audio_log_count <= 3 or self._audio_log_count % 100 == 0:
+                        logger.info(f"[realtime] Audio input: chunk={self._audio_log_count}, bytes={len(pcm_data)}, queue={self._input_track._queue.qsize()}")
+                except Exception as e:
+                    logger.error(f"[realtime] Audio decode error: {e}")
 
         elif event_type == "input_audio_buffer.commit":
             pass  # VAD 由 ChatGPT 服务端处理
@@ -146,7 +151,6 @@ class RealtimeSession:
         """从 ChatGPT 的远端音频轨道读取帧，编码为 base64 发送给客户端。"""
         track = getattr(self, "_remote_audio_track", None)
         if not track:
-            # 等待远端 track 到达
             for _ in range(50):
                 await asyncio.sleep(0.1)
                 track = getattr(self, "_remote_audio_track", None)
@@ -156,6 +160,9 @@ class RealtimeSession:
                 logger.warning("[realtime] No remote audio track received")
                 return
 
+        logger.info(f"[realtime] Audio sender started, remote track ready")
+        recv_count = 0
+        non_silence_count = 0
         silence_count = 0
         while not self._closed:
             try:
@@ -166,7 +173,9 @@ class RealtimeSession:
                 break
 
             pcm_bytes = bytes(frame.planes[0])
-            # 检测是否静音帧（全零或极低能量）
+            recv_count += 1
+            if recv_count <= 3 or recv_count % 500 == 0:
+                logger.info(f"[realtime] Remote audio frame #{recv_count}: {len(pcm_bytes)} bytes, non_silence_total={non_silence_count}")
             is_silence = all(b == 0 for b in pcm_bytes[:20])
 
             if is_silence:
@@ -174,6 +183,7 @@ class RealtimeSession:
                 if silence_count > 25:  # 500ms 静音不推送
                     continue
             else:
+                non_silence_count += 1
                 if silence_count > 25:
                     await self._send_event("response.audio.done", {})
                 silence_count = 0
