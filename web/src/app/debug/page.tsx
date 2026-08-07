@@ -8,10 +8,12 @@ import { useAuthGuard } from "@/lib/use-auth-guard";
 import { ChatPanel } from "./components/chat-panel";
 import { PptPanel } from "./components/ppt-panel";
 import { PsdPanel } from "./components/psd-panel";
+import { RealtimePanel } from "./components/realtime-panel";
 import { SearchPanel } from "./components/search-panel";
 import { SkillPanel } from "./components/skill-panel";
 
 const tabs = [
+  { value: "realtime", title: "实时语音" },
   { value: "skills", title: "搜索Skills" },
   { value: "search", title: "搜索" },
   { value: "ppt", title: "PPT生成" },
@@ -31,7 +33,7 @@ export default function DebugPage() {
   }
 
   return (
-    <Tabs defaultValue="skills" className="mx-auto flex min-h-[calc(100vh-49px)] w-full max-w-[1600px] flex-col gap-4 px-4 pt-3 pb-6 md:px-8">
+    <Tabs defaultValue="realtime" className="mx-auto flex min-h-[calc(100vh-49px)] w-full max-w-[1600px] flex-col gap-4 px-4 pt-3 pb-6 md:px-8">
       <TabsList variant="line" className="w-full">
         {tabs.map(({ value, title }) => (
           <TabsTrigger key={value} value={value}>
@@ -39,6 +41,9 @@ export default function DebugPage() {
           </TabsTrigger>
         ))}
       </TabsList>
+      <TabsContent value="realtime" className="min-h-0">
+        <RealtimePanel />
+      </TabsContent>
       <TabsContent value="skills">
         <SkillPanel />
       </TabsContent>
