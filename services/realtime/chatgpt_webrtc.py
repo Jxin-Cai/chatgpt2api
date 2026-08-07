@@ -7,6 +7,7 @@ from typing import Any
 from aiortc import RTCPeerConnection, RTCSessionDescription
 
 from services.realtime.audio_track import BufferedAudioStreamTrack
+from services.realtime.signaling import UpstreamSignalingError
 
 REALTIME_DEFAULT_VOICE = "ember"
 REALTIME_VOICES: tuple[dict[str, str], ...] = (
@@ -83,19 +84,20 @@ async def exchange_realtime_sdp(
         content_type="application/json",
     )
 
-    response = await asyncio.to_thread(
-        cffi_requests.post,
-        "https://chatgpt.com/realtime/wm",
-        params={"dcid": "0"},
-        multipart=mime,
-        headers=build_realtime_headers(access_token),
-        impersonate="chrome",
-        timeout=30,
-    )
-    if response.status_code != 201:
-        raise RuntimeError(
-            f"Realtime signaling failed: HTTP {response.status_code} - {response.text[:200]}"
+    try:
+        response = await asyncio.to_thread(
+            cffi_requests.post,
+            "https://chatgpt.com/realtime/wm",
+            params={"dcid": "0"},
+            multipart=mime,
+            headers=build_realtime_headers(access_token),
+            impersonate="chrome",
+            timeout=30,
         )
+    except Exception as exc:
+        raise UpstreamSignalingError(0, str(exc)[:500]) from exc
+    if response.status_code != 201:
+        raise UpstreamSignalingError(response.status_code, response.text[:500])
     return response.text.strip(), response.headers.get("location", "")
 
 

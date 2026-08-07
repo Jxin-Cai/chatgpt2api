@@ -30,7 +30,11 @@ def test_direct_realtime_signaling_proxies_sdp_without_exposing_upstream_token()
         )
 
     assert response.status_code == 200
-    assert response.json() == {"sdp": "answer-sdp", "location": "session-location"}
+    payload = response.json()
+    assert payload["sdp"] == "answer-sdp"
+    assert payload["location"] == "session-location"
+    assert payload["attempt_id"]
+    assert payload["request_id"] == response.headers["X-Request-ID"]
     exchange.assert_awaited_once()
     assert exchange.await_args.kwargs["access_token"] == "upstream-secret-token"
     assert "upstream-secret-token" not in response.text
@@ -74,3 +78,68 @@ def test_realtime_signaling_rejects_unknown_voice_before_contacting_upstream():
     )
 
     assert response.status_code == 422
+
+
+def test_realtime_signaling_retry_excludes_previously_selected_account():
+    app = FastAPI()
+    app.include_router(realtime.create_router())
+    selected: list[set[str]] = []
+
+    def select(excluded=None):
+        selected.append(set(excluded or set()))
+        return "first-token" if "first-token" not in selected[-1] else "second-token"
+
+    with (
+        mock.patch.object(realtime, "require_identity", return_value={"id": "retry-user", "name": "tester"}),
+        mock.patch.object(realtime.account_service, "get_realtime_access_token", side_effect=select),
+        mock.patch.object(
+            realtime,
+            "exchange_realtime_sdp",
+            new=mock.AsyncMock(return_value=("answer-sdp", "session-location")),
+        ),
+    ):
+        client = TestClient(app)
+        first = client.post(
+            "/v1/realtime/sessions",
+            headers={"Authorization": "Bearer client-key"},
+            json={"sdp": "v=0\r\n" + "a=x\r\n" * 30},
+        )
+        second = client.post(
+            "/v1/realtime/sessions",
+            headers={"Authorization": "Bearer client-key"},
+            json={
+                "sdp": "v=0\r\n" + "a=x\r\n" * 30,
+                "attempt_id": first.json()["attempt_id"],
+            },
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert selected == [set(), {"first-token"}]
+
+
+def test_realtime_signaling_hides_upstream_error_body():
+    app = FastAPI()
+    app.include_router(realtime.create_router())
+
+    with (
+        mock.patch.object(realtime, "require_identity", return_value={"id": "error-user", "name": "tester"}),
+        mock.patch.object(realtime.account_service, "get_realtime_access_token", return_value="token"),
+        mock.patch.object(
+            realtime,
+            "exchange_realtime_sdp",
+            new=mock.AsyncMock(
+                side_effect=realtime.UpstreamSignalingError(403, "private upstream response and token")
+            ),
+        ),
+    ):
+        response = TestClient(app).post(
+            "/v1/realtime/sessions",
+            headers={"Authorization": "Bearer client-key"},
+            json={"sdp": "v=0\r\n" + "a=x\r\n" * 30},
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "realtime_upstream_error"
+    assert response.json()["error"]["retryable"] is True
+    assert "private upstream" not in response.text

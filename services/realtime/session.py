@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import struct
 import time
 from collections.abc import Callable
 from typing import Any
 
 from av import AudioFrame, AudioResampler
 from fastapi import WebSocket
+import numpy as np
 
 from services.realtime.audio_track import BufferedAudioStreamTrack, SAMPLE_RATE
 from services.realtime.chatgpt_webrtc import create_peer_connection
@@ -17,6 +17,7 @@ from utils.log import logger
 
 MAX_INPUT_AUDIO_B64_CHARS = 512_000
 DATA_CHANNEL_QUEUE_SIZE = 512
+CHATGPT_WEB_REALTIME_MODEL = "chatgpt-web-voice"
 
 
 class RealtimeQuotaExceeded(RuntimeError):
@@ -26,6 +27,8 @@ class RealtimeQuotaExceeded(RuntimeError):
 def decode_data_channel_message(message: str) -> dict[str, Any]:
     """解开 ChatGPT WebRTC 的 data_message 双层 JSON 封装。"""
     outer = json.loads(message)
+    if not isinstance(outer, dict):
+        raise TypeError("realtime data channel message must be a JSON object")
     if outer.get("type") != "data_message":
         return outer
     inner = outer.get("data")
@@ -36,6 +39,22 @@ def decode_data_channel_message(message: str) -> dict[str, Any]:
     if isinstance(inner, dict):
         return inner
     return outer
+
+
+def data_channel_message_priority(message: str) -> int:
+    """Rank messages so overload sheds telemetry before conversation state."""
+    try:
+        decoded = decode_data_channel_message(message)
+    except (json.JSONDecodeError, TypeError):
+        return 1
+    event_type = str(decoded.get("type") or "")
+    if event_type in {"error", "goodbye"} or event_type.endswith((".done", ".completed")):
+        return 3
+    if event_type == "chat_message_delta":
+        return 2
+    if event_type in {"state_update", "usage_update", "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"}:
+        return 0
+    return 1
 
 
 def quota_error_from_message(message: dict[str, Any]) -> str | None:
@@ -84,16 +103,18 @@ class RealtimeSession:
         websocket: WebSocket,
         access_token: str,
         access_token_provider: Callable[[set[str]], str] | None = None,
+        voice: str = "ember",
     ):
         self._identity = identity
-        self._model = model
+        self._requested_model = model
+        self._model = CHATGPT_WEB_REALTIME_MODEL
         self._ws = websocket
         self._access_token = access_token
         self._access_token_provider = access_token_provider
         self._pc = None
         self._input_track: BufferedAudioStreamTrack | None = None
         self._data_channel = None
-        self._voice = "ember"
+        self._voice = voice
         self._closed = False
         self._tasks: list[asyncio.Task] = []
         self._dc_messages: asyncio.Queue[str] = asyncio.Queue(maxsize=DATA_CHANNEL_QUEUE_SIZE)
@@ -108,6 +129,13 @@ class RealtimeSession:
             await self._send_event("session.created", {
                 "session": {"id": self._location, "model": self._model, "voice": self._voice}
             })
+            if self._requested_model and self._requested_model != self._model:
+                await self._send_event("warning", {
+                    "warning": {
+                        "code": "model_not_configurable",
+                        "message": f"ChatGPT Web Voice uses {self._model}; requested model was ignored",
+                    }
+                })
 
             reader_task = asyncio.create_task(self._client_reader(), name="ws-reader")
             sender_task = asyncio.create_task(self._audio_sender(), name="audio-sender")
@@ -251,11 +279,18 @@ class RealtimeSession:
 
     def _queue_dc_message(self, message: str) -> None:
         if self._dc_messages.full():
-            try:
-                self._dc_messages.get_nowait()
+            incoming_priority = data_channel_message_priority(message)
+            queued = self._dc_messages._queue  # asyncio.Queue intentionally exposes its backing deque internally.
+            drop_index = next(
+                (index for index, queued_message in enumerate(queued)
+                 if data_channel_message_priority(queued_message) < incoming_priority),
+                None,
+            )
+            if drop_index is None:
                 self._dc_dropped_messages += 1
-            except asyncio.QueueEmpty:
-                pass
+                return
+            del queued[drop_index]
+            self._dc_dropped_messages += 1
         try:
             self._dc_messages.put_nowait(message)
         except asyncio.QueueFull:
@@ -297,6 +332,7 @@ class RealtimeSession:
                         )
                 except Exception as e:
                     logger.error(f"[realtime] Audio decode error: {e}")
+                    await self._send_error(str(e), code="invalid_audio")
 
         elif event_type == "input_audio_buffer.commit":
             pass  # VAD 由 ChatGPT 服务端处理
@@ -307,9 +343,14 @@ class RealtimeSession:
 
         elif event_type == "session.update":
             session = event.get("session", {})
-            if "voice" in session:
-                self._voice = session["voice"]
-            await self._send_event("session.updated", {"session": {"voice": self._voice}})
+            requested_voice = session.get("voice")
+            if requested_voice and requested_voice != self._voice:
+                await self._send_error(
+                    "voice must be selected before the WebSocket session starts",
+                    code="unsupported_session_update",
+                )
+            else:
+                await self._send_event("session.updated", {"session": {"voice": self._voice}})
 
         elif event_type == "response.cancel":
             self._send_to_dc({"type": "response.cancel"})
@@ -317,6 +358,8 @@ class RealtimeSession:
         elif event_type in ("conversation.item.create", "response.create",
                             "conversation.item.delete", "conversation.item.truncate"):
             self._send_to_dc(event)
+        else:
+            await self._send_error(f"unsupported realtime event: {event_type or '<empty>'}", code="unsupported_event")
 
     def _send_to_dc(self, event: dict) -> None:
         if self._data_channel and self._data_channel.readyState == "open":
@@ -346,10 +389,10 @@ class RealtimeSession:
         silence_count = 0
         speaking = False
         next_send_at: float | None = None
-        # 将 5 个 20ms 帧合并为约 100ms 的 WS 消息，降低 JSON/base64 和浏览器
-        # AudioBufferSourceNode 的调度频率，也给网络抖动留出缓冲空间。
+        # 兼顾 JSON/base64 开销和交互延迟，聚合约 60ms 音频。WebRTC 直连
+        # 不经过这里；这是兼容 WebSocket 路径的抖动缓冲。
         output_buffer = bytearray()
-        output_chunk_bytes = int(SAMPLE_RATE * 0.1) * 2
+        output_chunk_bytes = int(SAMPLE_RATE * 0.06) * 2
 
         async def flush_output(force: bool = False) -> None:
             if not output_buffer or (not force and len(output_buffer) < output_chunk_bytes):
@@ -371,8 +414,8 @@ class RealtimeSession:
             recv_count += 1
             for output_frame, pcm_bytes in resample_to_pcm16_mono(resampler, frame):
 
-                samples_check = struct.unpack(f"<{len(pcm_bytes) // 2}h", pcm_bytes)
-                rms = (sum(sample * sample for sample in samples_check) / len(samples_check)) ** 0.5
+                samples_check = np.frombuffer(pcm_bytes, dtype="<i2").astype(np.float32)
+                rms = float(np.sqrt(np.mean(np.square(samples_check))))
                 is_silence = rms < 100
 
                 if recv_count <= 3 or recv_count % 500 == 0:

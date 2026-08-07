@@ -128,6 +128,24 @@ def test_data_channel_queue_is_bounded():
     assert session._dc_dropped_messages == 88
 
 
+def test_data_channel_queue_preserves_terminal_message_over_telemetry():
+    session = RealtimeSession(
+        identity={},
+        model="test",
+        websocket=object(),
+        access_token="token",
+    )
+    telemetry = json.dumps({"type": "state_update", "payload": {"new_state": "listening"}})
+    for _ in range(512):
+        session._queue_dc_message(telemetry)
+
+    terminal = json.dumps({"type": "goodbye", "payload": {"reason": "cap_reached"}})
+    session._queue_dc_message(terminal)
+
+    assert session._dc_messages.qsize() == 512
+    assert terminal in session._dc_messages._queue
+
+
 def test_remote_stereo_audio_is_downmixed_to_exact_mono_pcm_size():
     frame = AudioFrame(format="s16", layout="stereo", samples=960)
     frame.sample_rate = 48000

@@ -7,12 +7,36 @@ type ConnectOptions = {
   authorization: string;
   voice: string;
   signalingUrl: string;
+  attemptId?: string;
 };
+
+export type RealtimeConnectionQuality = {
+  roundTripTimeMs?: number;
+  jitterMs?: number;
+  packetsLost?: number;
+  packetsReceived?: number;
+  concealedSamples?: number;
+  candidateType?: string;
+};
+
+export class RealtimeSignalingError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryable: boolean,
+    readonly retryAfterMs: number,
+  ) {
+    super(message);
+    this.name = "RealtimeSignalingError";
+  }
+}
 
 type RealtimeWebRTCHandlers = {
   onEvent: (event: RealtimeEvent) => void;
   onConnectionState: (state: RTCPeerConnectionState) => void;
   onRemoteStream?: (stream: MediaStream) => void;
+  onQuality?: (quality: RealtimeConnectionQuality) => void;
+  onMicrophoneEnded?: () => void;
 };
 
 const CONNECTION_TIMEOUT_MS = 15_000;
@@ -106,17 +130,22 @@ export class RealtimeWebRTCConnection {
   private microphone: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private audioElement: HTMLAudioElement | null = null;
+  private signalingAbort: AbortController | null = null;
+  private statsTimer: number | null = null;
   private closed = true;
 
   constructor(private readonly handlers: RealtimeWebRTCHandlers) {}
 
-  async connect(options: ConnectOptions): Promise<{ location: string }> {
+  async connect(options: ConnectOptions): Promise<{ location: string; attemptId: string; requestId: string }> {
     this.close();
     this.closed = false;
 
     const pc = new RTCPeerConnection();
     this.pc = pc;
-    pc.onconnectionstatechange = () => this.handlers.onConnectionState(pc.connectionState);
+    pc.onconnectionstatechange = () => {
+      this.handlers.onConnectionState(pc.connectionState);
+      if (pc.connectionState === "connected") this.startQualitySampling(pc);
+    };
 
     const audio = new Audio();
     audio.autoplay = true;
@@ -145,7 +174,12 @@ export class RealtimeWebRTCConnection {
       throw new Error("连接已取消");
     }
     this.microphone = microphone;
-    microphone.getAudioTracks().forEach((track) => pc.addTrack(track, microphone));
+    microphone.getAudioTracks().forEach((track) => {
+      track.addEventListener("ended", () => {
+        if (!this.closed) this.handlers.onMicrophoneEnded?.();
+      }, { once: true });
+      pc.addTrack(track, microphone);
+    });
     pc.addTransceiver("video", { direction: "sendonly" });
 
     const dc = pc.createDataChannel("", { negotiated: true, id: 0, ordered: true });
@@ -183,16 +217,31 @@ export class RealtimeWebRTCConnection {
     if (this.closed) throw new Error("连接已取消");
     if (!pc.localDescription?.sdp) throw new Error("无法生成 WebRTC SDP offer");
 
+    const signalingAbort = new AbortController();
+    this.signalingAbort = signalingAbort;
     const response = await fetch(options.signalingUrl, {
       method: "POST",
       headers: {
         Authorization: options.authorization,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ sdp: pc.localDescription.sdp, voice: options.voice }),
+      body: JSON.stringify({
+        sdp: pc.localDescription.sdp,
+        voice: options.voice,
+        attempt_id: options.attemptId,
+      }),
+      signal: signalingAbort.signal,
     });
+    if (this.signalingAbort === signalingAbort) this.signalingAbort = null;
     const responseText = await response.text();
-    let result: { sdp?: string; location?: string; detail?: string } = {};
+    let result: {
+      sdp?: string;
+      location?: string;
+      attempt_id?: string;
+      request_id?: string;
+      detail?: string;
+      error?: { message?: string; retryable?: boolean; retry_after_ms?: number };
+    } = {};
     try {
       result = JSON.parse(responseText) as typeof result;
     } catch {
@@ -202,13 +251,23 @@ export class RealtimeWebRTCConnection {
       throw new Error("实时信令返回了无效响应");
     }
     if (!response.ok || !result.sdp) {
-      throw new Error(result.detail || `实时信令失败 (HTTP ${response.status})`);
+      const message = result.error?.message || result.detail || `实时信令失败 (HTTP ${response.status})`;
+      throw new RealtimeSignalingError(
+        message,
+        response.status,
+        Boolean(result.error?.retryable),
+        result.error?.retry_after_ms || 0,
+      );
     }
 
     if (this.closed) throw new Error("连接已取消");
     await pc.setRemoteDescription({ type: "answer", sdp: normalizeSdpLineEndings(result.sdp) });
     await Promise.all([waitForConnection(pc), waitForDataChannel(dc)]);
-    return { location: result.location || "" };
+    return {
+      location: result.location || "",
+      attemptId: result.attempt_id || options.attemptId || "",
+      requestId: result.request_id || response.headers.get("X-Request-ID") || "",
+    };
   }
 
   sendEvent(event: RealtimeEvent): void {
@@ -241,6 +300,10 @@ export class RealtimeWebRTCConnection {
 
   close(): void {
     this.closed = true;
+    this.signalingAbort?.abort();
+    this.signalingAbort = null;
+    if (this.statsTimer !== null) window.clearInterval(this.statsTimer);
+    this.statsTimer = null;
     if (this.dataChannel?.readyState === "open") {
       this.setMicrophoneEnabled(false);
     }
@@ -265,5 +328,35 @@ export class RealtimeWebRTCConnection {
   private sendWrapped(event: RealtimeEvent): void {
     if (this.dataChannel?.readyState !== "open") return;
     this.dataChannel.send(JSON.stringify({ type: "data_message", data: JSON.stringify(event) }));
+  }
+
+  private startQualitySampling(pc: RTCPeerConnection): void {
+    if (!this.handlers.onQuality || this.statsTimer !== null) return;
+    const sample = async () => {
+      if (this.closed || pc.connectionState !== "connected") return;
+      try {
+        const report = await pc.getStats();
+        const quality: RealtimeConnectionQuality = {};
+        report.forEach((stat) => {
+          if (stat.type === "inbound-rtp" && stat.kind === "audio") {
+            quality.jitterMs = typeof stat.jitter === "number" ? Math.round(stat.jitter * 1000) : undefined;
+            quality.packetsLost = typeof stat.packetsLost === "number" ? stat.packetsLost : undefined;
+            quality.packetsReceived = typeof stat.packetsReceived === "number" ? stat.packetsReceived : undefined;
+            quality.concealedSamples = typeof stat.concealedSamples === "number" ? stat.concealedSamples : undefined;
+          } else if (stat.type === "candidate-pair" && stat.state === "succeeded" && stat.nominated) {
+            quality.roundTripTimeMs = typeof stat.currentRoundTripTime === "number"
+              ? Math.round(stat.currentRoundTripTime * 1000)
+              : undefined;
+            const local = report.get(stat.localCandidateId);
+            if (local && typeof local.candidateType === "string") quality.candidateType = local.candidateType;
+          }
+        });
+        this.handlers.onQuality?.(quality);
+      } catch {
+        // A stats query can race with close(); the next connected session will restart it.
+      }
+    };
+    void sample();
+    this.statsTimer = window.setInterval(() => void sample(), 5_000);
   }
 }

@@ -378,6 +378,15 @@ Authorization: Bearer <auth-key>
 信令，不会把上游账号 Token 暴露给客户端；音频媒体不经过本服务进行
 Base64 转码，因此延迟和抖动更低。
 
+信令端点默认按 API Key 身份限制为每分钟 20 次请求，同时最多处理 8 个并发
+上游 SDP 交换。可通过以下环境变量调整：
+
+| 环境变量 | 默认值 | 说明 |
+|:--|:--|:--|
+| `CHATGPT2API_REALTIME_SIGNALING_RATE_PER_MINUTE` | `20` | 单个身份每分钟最多创建的信令请求 |
+| `CHATGPT2API_REALTIME_SIGNALING_CONCURRENCY` | `8` | 全局并发 SDP 交换数 |
+| `CHATGPT2API_REALTIME_ATTEMPT_TTL_SECONDS` | `300` | 账号重试链的保留时间 |
+
 #### 查询能力和声音
 
 ```bash
@@ -396,6 +405,7 @@ ICE 失败和页面卸载时的资源释放。
 ```js
 const baseUrl = "http://localhost:8000";
 const apiKey = "<auth-key>";
+let previousAttemptId = "";
 
 const pc = new RTCPeerConnection();
 const remoteAudio = new Audio();
@@ -478,14 +488,25 @@ const response = await fetch(`${baseUrl}/v1/realtime/sessions`, {
     sdp: pc.localDescription.sdp,
     voice: "ember",
     language: "auto",
+    // 额度重试时传回上一次响应中的 attempt_id，避免再次选择同一账号。
+    attempt_id: previousAttemptId || undefined,
   }),
 });
 
-if (!response.ok) throw new Error(`signaling failed: ${response.status}`);
 const answer = await response.json();
+if (!response.ok) {
+  // { error: { code, message, retryable, retry_after_ms, request_id } }
+  throw new Error(answer.error?.message || `signaling failed: ${response.status}`);
+}
+previousAttemptId = answer.attempt_id;
 const answerSdp = `${answer.sdp.trim().replace(/\r?\n/g, "\r\n")}\r\n`;
 await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 ```
+
+成功响应还包含 `attempt_id`、`request_id`，响应头包含 `X-Request-ID`。当
+DataChannel 收到语音额度耗尽的 `usage_update` 或 `goodbye` 时，重新创建
+PeerConnection，并把 `attempt_id` 放入下一次请求；服务端会在这条重试链中排除
+已经尝试过的账号。收到 `429` 或 `503` 时应遵循 `Retry-After` 并加入随机退避。
 
 文字消息也通过 DataChannel 发送，并使用双层 `data_message` 封装：
 
@@ -523,12 +544,17 @@ sendRealtimeEvent({ type: "response.create" });
 不能使用 WebRTC 时，可以连接：
 
 ```text
-ws://localhost:8000/v1/realtime
+ws://localhost:8000/v1/realtime?voice=ember
 ```
 
 非浏览器客户端应通过 `Authorization: Bearer <auth-key>` 请求头鉴权。浏览器原生
 WebSocket 无法设置自定义请求头，可使用 `?api_key=<auth-key>`；但 URL 可能进入
 代理访问日志，因此浏览器仍推荐使用上面的 WebRTC 方案。
+
+该兼容端点的实际模型标识为 `chatgpt-web-voice`，模型不可通过查询参数切换；声音
+必须在建立 WebSocket 时用 `voice` 查询参数选择。连接建立后再通过
+`session.update` 切换声音会返回 `unsupported_session_update`，避免客户端误以为
+设置已经生效。
 
 输入音频为 `48 kHz / PCM16 / 单声道 / little-endian`，按 Base64 分片发送：
 

@@ -1,12 +1,17 @@
 "use client";
 
 import { FormEvent, type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
-import { Activity, ChevronDown, Mic, MicOff, Phone, PhoneOff, Send } from "lucide-react";
+import { Activity, ChevronDown, Mic, MicOff, Phone, PhoneOff, Send, Wifi } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import webConfig from "@/constants/common-env";
-import { RealtimeEvent, RealtimeWebRTCConnection } from "@/lib/realtime-webrtc";
+import {
+  RealtimeEvent,
+  RealtimeSignalingError,
+  RealtimeWebRTCConnection,
+  type RealtimeConnectionQuality,
+} from "@/lib/realtime-webrtc";
 import {
   chatTranscriptUpdateFromEvent,
   transcriptUpdateFromEvent,
@@ -45,6 +50,9 @@ const VOICES = [
 ];
 
 const MAX_QUOTA_RETRIES = 2;
+const MAX_NETWORK_RETRIES = 3;
+const MAX_TRANSCRIPT_ENTRIES = 100;
+const MAX_TRANSCRIPT_CHARS = 20_000;
 
 const PHASE_COPY: Record<LivePhase, { title: string; detail: string }> = {
   offline: { title: "准备好开始了吗？", detail: "选择声音，然后开启一段自然对话" },
@@ -81,6 +89,7 @@ export function RealtimePanel() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [textInput, setTextInput] = useState("");
+  const [quality, setQuality] = useState<RealtimeConnectionQuality | null>(null);
 
   const realtimeRef = useRef<RealtimeWebRTCConnection | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -97,6 +106,10 @@ export function RealtimePanel() {
   const quotaRetryCountRef = useRef(0);
   const quotaRetryScheduledRef = useRef(false);
   const quotaRetryTimerRef = useRef<number | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectCountRef = useRef(0);
+  const disconnectRequestedRef = useRef(false);
+  const attemptIdRef = useRef("");
   const connectRef = useRef<(retry?: boolean) => Promise<void>>(async () => {});
   const logIdRef = useRef(0);
   const transcriptIdRef = useRef(0);
@@ -104,6 +117,8 @@ export function RealtimePanel() {
   const activeTurnRef = useRef<Record<"user" | "assistant", string | null>>({ user: null, assistant: null });
   const chatTranscriptCursorRef = useRef<ChatTranscriptCursor | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const pendingTranscriptUpdatesRef = useRef<TranscriptUpdate[]>([]);
+  const transcriptFlushFrameRef = useRef(0);
 
   useEffect(() => {
     currentPhaseRef.current = phase;
@@ -131,41 +146,54 @@ export function RealtimePanel() {
 
   const applyTranscriptUpdate = useCallback((update: TranscriptUpdate) => {
     if (!update.text && !update.final) return;
-    setTranscript((previous) => {
-      let sourceId = update.sourceId || activeTurnRef.current[update.role];
-      let index = sourceId ? previous.findIndex((entry) => entry.sourceId === sourceId) : -1;
-      if (index < 0) {
-        for (let candidate = previous.length - 1; candidate >= 0; candidate -= 1) {
-          if (previous[candidate].role === update.role && !previous[candidate].final) {
-            index = candidate;
-            break;
+    pendingTranscriptUpdatesRef.current.push(update);
+    if (transcriptFlushFrameRef.current) return;
+    transcriptFlushFrameRef.current = requestAnimationFrame(() => {
+      transcriptFlushFrameRef.current = 0;
+      const updates = pendingTranscriptUpdatesRef.current.splice(0);
+      setTranscript((previous) => {
+        let next = previous;
+        for (const pending of updates) {
+          let sourceId = pending.sourceId || activeTurnRef.current[pending.role];
+          let index = sourceId ? next.findIndex((entry) => entry.sourceId === sourceId) : -1;
+          if (index < 0) {
+            for (let candidate = next.length - 1; candidate >= 0; candidate -= 1) {
+              if (next[candidate].role === pending.role && !next[candidate].final) {
+                index = candidate;
+                break;
+              }
+            }
           }
-        }
-      }
-      if (index < 0) {
-        sourceId = sourceId || `${update.role}-${++transcriptTurnRef.current}`;
-        activeTurnRef.current[update.role] = sourceId;
-        return [
-          ...previous.map((entry) => !entry.final ? { ...entry, final: true } : entry),
-          {
-            id: transcriptIdRef.current++,
-            sourceId,
-            role: update.role,
-            text: update.text,
-            final: update.final,
-          },
-        ];
-      }
+          if (index < 0) {
+            sourceId = sourceId || `${pending.role}-${++transcriptTurnRef.current}`;
+            activeTurnRef.current[pending.role] = sourceId;
+            next = [
+              ...next.map((entry) => !entry.final ? { ...entry, final: true } : entry),
+              {
+                id: transcriptIdRef.current++,
+                sourceId,
+                role: pending.role,
+                text: pending.text.slice(-MAX_TRANSCRIPT_CHARS),
+                final: pending.final,
+              },
+            ];
+            continue;
+          }
 
-      const current = previous[index];
-      const next = [...previous];
-      next[index] = {
-        ...current,
-        sourceId: sourceId || current.sourceId,
-        text: update.mode === "append" ? current.text + update.text : update.text || current.text,
-        final: update.final,
-      };
-      return next;
+          const current = next[index];
+          const mergedText = pending.mode === "append"
+            ? current.text + pending.text
+            : pending.text || current.text;
+          next = [...next];
+          next[index] = {
+            ...current,
+            sourceId: sourceId || current.sourceId,
+            text: mergedText.slice(-MAX_TRANSCRIPT_CHARS),
+            final: pending.final,
+          };
+        }
+        return next.slice(-MAX_TRANSCRIPT_ENTRIES);
+      });
     });
   }, []);
 
@@ -332,9 +360,14 @@ export function RealtimePanel() {
   }, [addLog, applyTranscriptUpdate, startTurn]);
 
   const disconnect = useCallback(() => {
+    disconnectRequestedRef.current = true;
     if (quotaRetryTimerRef.current !== null) window.clearTimeout(quotaRetryTimerRef.current);
+    if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
     quotaRetryTimerRef.current = null;
+    reconnectTimerRef.current = null;
     quotaRetryScheduledRef.current = false;
+    reconnectCountRef.current = 0;
+    attemptIdRef.current = "";
     realtimeRef.current?.close();
     realtimeRef.current = null;
     stopMetering();
@@ -342,9 +375,31 @@ export function RealtimePanel() {
     setConnected(false);
     setConnecting(false);
     setMicActive(false);
+    setQuality(null);
     setPhase("offline");
     setStatusDetail(PHASE_COPY.offline.detail);
   }, [stopMetering]);
+
+  const scheduleNetworkReconnect = useCallback((reason: string, minimumDelayMs = 0) => {
+    if (disconnectRequestedRef.current || reconnectTimerRef.current !== null) return;
+    if (reconnectCountRef.current >= MAX_NETWORK_RETRIES) {
+      setPhase("error");
+      setStatusDetail("网络恢复失败，请手动重新连接");
+      return;
+    }
+    reconnectCountRef.current += 1;
+    const delay = Math.max(
+      minimumDelayMs,
+      Math.min(6_000, 750 * (2 ** (reconnectCountRef.current - 1))) + Math.round(Math.random() * 250),
+    );
+    setPhase("connecting");
+    setStatusDetail(`${reason}，${Math.ceil(delay / 1000)} 秒后重连`);
+    addLog("info", `${reason}，自动重连 ${reconnectCountRef.current}/${MAX_NETWORK_RETRIES}`);
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null;
+      void connectRef.current(false);
+    }, delay);
+  }, [addLog]);
 
   const connect = useCallback(async (retry = false) => {
     const session = await getStoredAuthSession();
@@ -352,6 +407,7 @@ export function RealtimePanel() {
       addLog("error", "未登录，请先登录");
       return;
     }
+    disconnectRequestedRef.current = false;
     realtimeRef.current?.close();
     stopMetering();
     setConnected(false);
@@ -362,7 +418,10 @@ export function RealtimePanel() {
     setStatusDetail(retry ? "正在选择下一个可用账号" : PHASE_COPY.connecting.detail);
     terminalErrorRef.current = "";
     quotaRetryScheduledRef.current = false;
-    if (!retry) quotaRetryCountRef.current = 0;
+    if (!retry) {
+      quotaRetryCountRef.current = 0;
+      attemptIdRef.current = "";
+    }
 
     const signalingUrl = webConfig.apiUrl
       ? new URL("/v1/realtime/sessions", webConfig.apiUrl).toString()
@@ -372,12 +431,23 @@ export function RealtimePanel() {
       onRemoteStream: attachRemoteMeter,
       onConnectionState: (state) => {
         addLog("info", `WebRTC: ${state}`);
-        if (state === "failed") {
+        if (state === "connected" && reconnectTimerRef.current !== null) {
+          window.clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = null;
+          reconnectCountRef.current = 0;
+          setConnected(true);
+          setPhase(micActiveRef.current ? "listening" : "muted");
+          setStatusDetail("网络连接已恢复");
+        } else if (state === "failed") {
           setConnected(false);
-          setPhase("error");
-          setStatusDetail("WebRTC 连接失败，请重新连接");
+          scheduleNetworkReconnect("WebRTC 连接中断");
+        } else if (state === "disconnected") {
+          setConnected(false);
+          scheduleNetworkReconnect("网络连接不稳定");
         }
       },
+      onQuality: setQuality,
+      onMicrophoneEnded: () => scheduleNetworkReconnect("麦克风设备已断开"),
     });
     realtimeRef.current = connection;
 
@@ -387,15 +457,18 @@ export function RealtimePanel() {
         authorization: `Bearer ${session.key}`,
         voice,
         signalingUrl,
+        attemptId: retry ? attemptIdRef.current : undefined,
       });
       if (realtimeRef.current !== connection) return;
       setConnected(true);
+      reconnectCountRef.current = 0;
+      attemptIdRef.current = result.attemptId;
       setConnecting(false);
       micActiveRef.current = true;
       setMicActive(true);
       setPhase("listening");
       setStatusDetail(PHASE_COPY.listening.detail);
-      addLog("recv", `session.created (${result.location})`);
+      addLog("recv", `session.created (${result.location}) request=${result.requestId || "-"}`);
       const microphone = connection.getMicrophoneStream();
       if (microphone) startMetering(microphone);
       const remote = connection.getRemoteStream();
@@ -413,17 +486,35 @@ export function RealtimePanel() {
       terminalErrorRef.current = message;
       setStatusDetail(message);
       addLog("error", message);
+      if (error instanceof RealtimeSignalingError && error.retryable) {
+        scheduleNetworkReconnect(
+          `信令暂时不可用${error.status ? ` (HTTP ${error.status})` : ""}`,
+          error.retryAfterMs,
+        );
+      }
     }
-  }, [addLog, attachRemoteMeter, handleRealtimeEvent, startMetering, stopMetering, voice]);
+  }, [addLog, attachRemoteMeter, handleRealtimeEvent, scheduleNetworkReconnect, startMetering, stopMetering, voice]);
 
   useEffect(() => {
     connectRef.current = connect;
+    const handleOnline = () => {
+      if (!realtimeRef.current && !disconnectRequestedRef.current) {
+        scheduleNetworkReconnect("网络已恢复");
+      }
+    };
+    const handlePageHide = () => realtimeRef.current?.close();
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("pagehide", handlePageHide);
     return () => {
       if (quotaRetryTimerRef.current !== null) window.clearTimeout(quotaRetryTimerRef.current);
+      if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
+      if (transcriptFlushFrameRef.current) cancelAnimationFrame(transcriptFlushFrameRef.current);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("pagehide", handlePageHide);
       realtimeRef.current?.close();
       stopMetering();
     };
-  }, [connect, stopMetering]);
+  }, [connect, scheduleNetworkReconnect, stopMetering]);
 
   const submitText = (event: FormEvent) => {
     event.preventDefault();
@@ -431,6 +522,13 @@ export function RealtimePanel() {
   };
 
   const phaseCopy = PHASE_COPY[phase];
+  const qualityLabel = !quality || (quality.roundTripTimeMs === undefined && quality.jitterMs === undefined)
+    ? "检测中"
+    : (quality.roundTripTimeMs || 0) > 350 || (quality.jitterMs || 0) > 80
+      ? "网络较差"
+      : (quality.roundTripTimeMs || 0) > 180 || (quality.jitterMs || 0) > 40
+        ? "网络一般"
+        : "网络良好";
 
   return (
     <section className="relative min-h-[680px] overflow-hidden rounded-[30px] border border-white/10 bg-[#070a16] text-white shadow-[0_30px_100px_rgba(12,18,48,0.24)]">
@@ -445,6 +543,15 @@ export function RealtimePanel() {
           </div>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          {connected && (
+            <span
+              className="hidden items-center gap-1.5 rounded-full border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] text-white/42 sm:flex"
+              title={quality ? `RTT ${quality.roundTripTimeMs ?? "-"}ms · 抖动 ${quality.jitterMs ?? "-"}ms · ${quality.candidateType ?? "unknown"}` : "正在采集 WebRTC 质量"}
+            >
+              <Wifi className="size-3 text-cyan-300/75" />
+              {qualityLabel}
+            </span>
+          )}
           <Select value={voice} onValueChange={setVoice} disabled={connected || connecting}>
             <SelectTrigger aria-label="选择声音" className="h-9 w-[190px] border-white/10 bg-white/6 text-xs text-white shadow-none hover:bg-white/10">
               <SelectValue />
