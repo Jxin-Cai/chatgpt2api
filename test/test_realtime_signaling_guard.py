@@ -23,3 +23,15 @@ def test_attempt_chain_is_bound_to_identity_and_tracks_exclusions():
     assert excluded == {"account-token"}
     assert other_attempt != attempt_id
     assert other_excluded == set()
+
+
+def test_quota_report_cools_account_for_new_attempts():
+    guard = RealtimeSignalingGuard(max_concurrency=1, rate_per_minute=10, attempt_ttl_seconds=30)
+    attempt_id, _ = guard.open_attempt("user", None)
+    guard.record_account(attempt_id, "exhausted-account")
+
+    assert guard.mark_quota_exhausted("other-user", attempt_id) is False
+    assert guard.mark_quota_exhausted("user", attempt_id) is True
+
+    _, excluded = guard.open_attempt("new-user", None)
+    assert "exhausted-account" in excluded

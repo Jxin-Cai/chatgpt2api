@@ -143,3 +143,23 @@ def test_realtime_signaling_hides_upstream_error_body():
     assert response.json()["error"]["code"] == "realtime_upstream_error"
     assert response.json()["error"]["retryable"] is True
     assert "private upstream" not in response.text
+
+
+def test_realtime_quota_report_requires_matching_attempt_identity():
+    app = FastAPI()
+    app.include_router(realtime.create_router())
+
+    with mock.patch.object(realtime, "require_identity", return_value={"id": "quota-user", "name": "tester"}):
+        with mock.patch.object(
+            realtime.realtime_signaling_guard,
+            "mark_quota_exhausted",
+            return_value=True,
+        ) as mark:
+            response = TestClient(app).post(
+                "/v1/realtime/sessions/attempt-123456789/quota-exhausted",
+                headers={"Authorization": "Bearer client-key"},
+            )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    mark.assert_called_once_with("quota-user", "attempt-123456789")

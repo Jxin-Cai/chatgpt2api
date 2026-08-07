@@ -34,6 +34,7 @@ class _AttemptChain:
     identity_key: str
     expires_at: float
     excluded_tokens: set[str] = field(default_factory=set)
+    last_token: str | None = None
 
 
 class RealtimeSignalingGuard:
@@ -59,10 +60,14 @@ class RealtimeSignalingGuard:
         self.attempt_ttl_seconds = attempt_ttl_seconds or _positive_int(
             "CHATGPT2API_REALTIME_ATTEMPT_TTL_SECONDS", 300
         )
+        self.quota_cooldown_seconds = _positive_int(
+            "CHATGPT2API_REALTIME_QUOTA_COOLDOWN_SECONDS", 3600
+        )
         self._semaphore = asyncio.Semaphore(self.max_concurrency)
         self._lock = threading.Lock()
         self._rate_events: dict[str, deque[float]] = {}
         self._attempts: dict[str, _AttemptChain] = {}
+        self._quota_cooldowns: dict[str, float] = {}
 
     def check_rate_limit(self, identity_key: str, now: float | None = None) -> int:
         current = time.monotonic() if now is None else now
@@ -88,6 +93,9 @@ class RealtimeSignalingGuard:
             expired = [key for key, value in self._attempts.items() if value.expires_at <= now]
             for key in expired:
                 self._attempts.pop(key, None)
+            expired_cooldowns = [token for token, expires_at in self._quota_cooldowns.items() if expires_at <= now]
+            for token in expired_cooldowns:
+                self._quota_cooldowns.pop(token, None)
 
             chain = self._attempts.get(attempt_id or "")
             if chain is None or chain.identity_key != identity_key:
@@ -99,13 +107,28 @@ class RealtimeSignalingGuard:
                 self._attempts[attempt_id] = chain
             else:
                 chain.expires_at = now + self.attempt_ttl_seconds
-            return attempt_id, set(chain.excluded_tokens)
+            return attempt_id, set(chain.excluded_tokens) | set(self._quota_cooldowns)
 
     def record_account(self, attempt_id: str, access_token: str) -> None:
         with self._lock:
             chain = self._attempts.get(attempt_id)
             if chain is not None:
                 chain.excluded_tokens.add(access_token)
+                chain.last_token = access_token
+
+    def mark_quota_exhausted(self, identity_key: str, attempt_id: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            chain = self._attempts.get(attempt_id)
+            if (
+                chain is None
+                or chain.identity_key != identity_key
+                or chain.expires_at <= now
+                or not chain.last_token
+            ):
+                return False
+            self._quota_cooldowns[chain.last_token] = now + self.quota_cooldown_seconds
+            return True
 
     @asynccontextmanager
     async def signaling_slot(self):

@@ -37,6 +37,7 @@ type RealtimeWebRTCHandlers = {
   onRemoteStream?: (stream: MediaStream) => void;
   onQuality?: (quality: RealtimeConnectionQuality) => void;
   onMicrophoneEnded?: () => void;
+  onMicrophoneState?: (state: "live" | "muted", settings: MediaTrackSettings) => void;
 };
 
 const CONNECTION_TIMEOUT_MS = 15_000;
@@ -132,6 +133,7 @@ export class RealtimeWebRTCConnection {
   private audioElement: HTMLAudioElement | null = null;
   private signalingAbort: AbortController | null = null;
   private statsTimer: number | null = null;
+  private sessionReport: { authorization: string; signalingUrl: string; attemptId: string } | null = null;
   private closed = true;
 
   constructor(private readonly handlers: RealtimeWebRTCHandlers) {}
@@ -175,10 +177,16 @@ export class RealtimeWebRTCConnection {
     }
     this.microphone = microphone;
     microphone.getAudioTracks().forEach((track) => {
+      const notifyMicrophoneState = () => {
+        if (!this.closed) this.handlers.onMicrophoneState?.(track.muted ? "muted" : "live", track.getSettings());
+      };
+      track.addEventListener("mute", notifyMicrophoneState);
+      track.addEventListener("unmute", notifyMicrophoneState);
       track.addEventListener("ended", () => {
         if (!this.closed) this.handlers.onMicrophoneEnded?.();
       }, { once: true });
       pc.addTrack(track, microphone);
+      notifyMicrophoneState();
     });
     pc.addTransceiver("video", { direction: "sendonly" });
 
@@ -260,14 +268,36 @@ export class RealtimeWebRTCConnection {
       );
     }
 
+    // Quota events can arrive as soon as the DataChannel opens, before connect()
+    // finishes awaiting both transports. Make the report context available first.
+    const attemptId = result.attempt_id || options.attemptId || "";
+    this.sessionReport = {
+      authorization: options.authorization,
+      signalingUrl: options.signalingUrl.replace(/\/$/, ""),
+      attemptId,
+    };
     if (this.closed) throw new Error("连接已取消");
     await pc.setRemoteDescription({ type: "answer", sdp: normalizeSdpLineEndings(result.sdp) });
     await Promise.all([waitForConnection(pc), waitForDataChannel(dc)]);
     return {
       location: result.location || "",
-      attemptId: result.attempt_id || options.attemptId || "",
+      attemptId,
       requestId: result.request_id || response.headers.get("X-Request-ID") || "",
     };
+  }
+
+  async reportQuotaExhausted(): Promise<void> {
+    const report = this.sessionReport;
+    if (!report?.attemptId) return;
+    try {
+      await fetch(`${report.signalingUrl}/${encodeURIComponent(report.attemptId)}/quota-exhausted`, {
+        method: "POST",
+        headers: { Authorization: report.authorization },
+        keepalive: true,
+      });
+    } catch {
+      // Retry-chain exclusion still works even if the global cooldown report fails.
+    }
   }
 
   sendEvent(event: RealtimeEvent): void {
@@ -304,6 +334,7 @@ export class RealtimeWebRTCConnection {
     this.signalingAbort = null;
     if (this.statsTimer !== null) window.clearInterval(this.statsTimer);
     this.statsTimer = null;
+    this.sessionReport = null;
     if (this.dataChannel?.readyState === "open") {
       this.setMicrophoneEnabled(false);
     }

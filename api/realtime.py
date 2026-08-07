@@ -177,6 +177,26 @@ def create_router() -> APIRouter:
             headers={"X-Request-ID": request_id},
         )
 
+    @router.post("/v1/realtime/sessions/{attempt_id}/quota-exhausted")
+    async def report_realtime_quota_exhausted(
+        attempt_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        """将 DataChannel 观察到的语音额度耗尽反馈给信令账号选择器。"""
+        identity = require_identity(authorization)
+        identity_key = str(identity.get("id") or identity.get("name") or "anonymous")
+        marked = realtime_signaling_guard.mark_quota_exhausted(identity_key, attempt_id)
+        if not marked:
+            return _error_response(
+                status_code=404,
+                code="realtime_attempt_not_found",
+                message="Realtime attempt is unknown or expired",
+                request_id=uuid.uuid4().hex,
+                retryable=False,
+            )
+        logger.info(f"[realtime] Voice quota cooldown recorded: identity={identity.get('name')}")
+        return {"ok": True, "cooldown_seconds": realtime_signaling_guard.quota_cooldown_seconds}
+
     @router.websocket("/v1/realtime")
     async def realtime_endpoint(
         websocket: WebSocket,

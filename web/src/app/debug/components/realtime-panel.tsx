@@ -294,13 +294,19 @@ export function RealtimePanel() {
       if ((exceeded || quotaEnded) && quotaRetryCountRef.current < MAX_QUOTA_RETRIES && !quotaRetryScheduledRef.current) {
         quotaRetryScheduledRef.current = true;
         quotaRetryCountRef.current += 1;
+        const quotaReport = realtimeRef.current?.reportQuotaExhausted();
         addLog("info", `语音额度不足，自动切换账号 (${quotaRetryCountRef.current}/${MAX_QUOTA_RETRIES})`);
         setPhase("connecting");
         setStatusDetail("当前账号额度不足，正在无感切换");
-        quotaRetryTimerRef.current = window.setTimeout(() => {
+        quotaRetryTimerRef.current = window.setTimeout(async () => {
           quotaRetryTimerRef.current = null;
+          await quotaReport;
           void connectRef.current(true);
         }, 120);
+      } else if ((exceeded || quotaEnded) && quotaRetryCountRef.current >= MAX_QUOTA_RETRIES) {
+        setPhase("error");
+        setStatusDetail("所有可用账号的实时语音额度均已耗尽");
+        addLog("error", "所有实时语音账号均已达到上游额度限制");
       }
     } else if (type === "error") {
       const error = data.error as Record<string, unknown> | undefined;
@@ -314,7 +320,8 @@ export function RealtimePanel() {
     }
   }, [addLog, applyTranscriptUpdate, startTurn]);
 
-  const canUseMic = typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+  const secureContext = typeof window !== "undefined" && window.isSecureContext;
+  const canUseMic = secureContext && !!navigator.mediaDevices?.getUserMedia;
 
   const startMic = useCallback(() => {
     realtimeRef.current?.setMicrophoneEnabled(true);
@@ -448,6 +455,10 @@ export function RealtimePanel() {
       },
       onQuality: setQuality,
       onMicrophoneEnded: () => scheduleNetworkReconnect("麦克风设备已断开"),
+      onMicrophoneState: (state, settings) => {
+        addLog("info", `麦克风: ${state} · ${settings.sampleRate || "?"}Hz · ${settings.channelCount || "?"}ch`);
+        if (state === "muted") setStatusDetail("麦克风没有提供音频，请检查系统输入设备和权限");
+      },
     });
     realtimeRef.current = connection;
 
@@ -639,7 +650,9 @@ export function RealtimePanel() {
 
           {!canUseMic && (
             <p className="mt-5 max-w-sm text-center text-xs leading-5 text-amber-200/70">
-              浏览器需要 HTTPS 或 localhost 才能访问麦克风。你仍可在右侧使用文字测试。
+              {!secureContext
+                ? "当前页面不是安全上下文。请通过 HTTPS 域名或 localhost 打开，否则浏览器不会提供麦克风。"
+                : "浏览器没有提供麦克风能力，请检查网站权限和系统输入设备。"}
             </p>
           )}
         </div>

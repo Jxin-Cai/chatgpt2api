@@ -386,6 +386,7 @@ Base64 转码，因此延迟和抖动更低。
 | `CHATGPT2API_REALTIME_SIGNALING_RATE_PER_MINUTE` | `20` | 单个身份每分钟最多创建的信令请求 |
 | `CHATGPT2API_REALTIME_SIGNALING_CONCURRENCY` | `8` | 全局并发 SDP 交换数 |
 | `CHATGPT2API_REALTIME_ATTEMPT_TTL_SECONDS` | `300` | 账号重试链的保留时间 |
+| `CHATGPT2API_REALTIME_QUOTA_COOLDOWN_SECONDS` | `3600` | DataChannel 确认语音额度耗尽后，暂停选择该账号的时间 |
 
 #### 查询能力和声音
 
@@ -507,6 +508,8 @@ await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 DataChannel 收到语音额度耗尽的 `usage_update` 或 `goodbye` 时，重新创建
 PeerConnection，并把 `attempt_id` 放入下一次请求；服务端会在这条重试链中排除
 已经尝试过的账号。收到 `429` 或 `503` 时应遵循 `Retry-After` 并加入随机退避。
+项目自带调试页会把 `cap_reached` 回报给服务端，使耗尽账号进入临时冷却，后续新
+会话也不会继续命中该账号。
 
 文字消息也通过 DataChannel 发送，并使用双层 `data_message` 封装：
 
