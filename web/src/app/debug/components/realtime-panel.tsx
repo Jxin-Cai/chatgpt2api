@@ -69,6 +69,7 @@ export function RealtimePanel() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [status, setStatus] = useState("未连接");
+  const [textInput, setTextInput] = useState("");
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -166,7 +167,13 @@ export function RealtimePanel() {
     [addLog, addTranscript, playAudio],
   );
 
+  const canUseMic = typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+
   const startMic = useCallback(async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      addLog("error", "麦克风不可用：需要 HTTPS 或 localhost 才能访问麦克风。可使用下方文字输入。");
+      return;
+    }
     try {
       if (!audioCtxRef.current) audioCtxRef.current = new AudioContext({ sampleRate: 48000 });
       const ctx = audioCtxRef.current;
@@ -248,6 +255,23 @@ export function RealtimePanel() {
     draw();
   }, []);
 
+  const sendTextMessage = useCallback((text: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !text.trim()) return;
+    const event = {
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: text.trim() }],
+      },
+    };
+    wsRef.current.send(JSON.stringify(event));
+    wsRef.current.send(JSON.stringify({ type: "response.create" }));
+    addTranscript("user", text.trim());
+    addLog("send", `text: ${text.trim().substring(0, 50)}`);
+    setTextInput("");
+  }, [addTranscript, addLog]);
+
   const connect = useCallback(async () => {
     const session = await getStoredAuthSession();
     if (!session) {
@@ -272,7 +296,11 @@ export function RealtimePanel() {
       addLog("info", "WebSocket 已连接");
       ws.send(JSON.stringify({ type: "session.update", session: { voice } }));
       addLog("send", `session.update (voice=${voice})`);
-      void startMic();
+      if (canUseMic) {
+        void startMic();
+      } else {
+        addLog("info", "HTTP 环境下麦克风不可用，请使用文字输入");
+      }
     };
     ws.onmessage = handleMessage;
     ws.onclose = (e) => {
@@ -343,9 +371,26 @@ export function RealtimePanel() {
           </div>
         </div>
 
-        {/* 底部波形 + 控制 */}
+        {/* 底部：文字输入 + 波形 + 控制 */}
         <div className="border-t border-stone-100 px-4 py-3 dark:border-white/10">
-          <canvas ref={canvasRef} className="mb-3 h-12 w-full rounded-lg bg-stone-50 dark:bg-stone-800" />
+          {connected && (
+            <form
+              className="mb-3 flex gap-2"
+              onSubmit={(e) => { e.preventDefault(); sendTextMessage(textInput); }}
+            >
+              <input
+                type="text"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder={canUseMic ? "输入文字消息（或直接说话）..." : "输入文字消息（当前环境麦克风不可用，需 HTTPS）..."}
+                className="flex-1 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm outline-none focus:border-stone-400 dark:border-white/10 dark:bg-stone-800 dark:text-white"
+              />
+              <Button type="submit" size="sm" disabled={!textInput.trim()} className="rounded-lg px-4">
+                发送
+              </Button>
+            </form>
+          )}
+          {micActive && <canvas ref={canvasRef} className="mb-3 h-12 w-full rounded-lg bg-stone-50 dark:bg-stone-800" />}
           <div className="flex items-center gap-3">
             <Select value={voice} onValueChange={setVoice} disabled={connected}>
               <SelectTrigger className="w-48">
@@ -370,6 +415,11 @@ export function RealtimePanel() {
               </Button>
             )}
           </div>
+          {!canUseMic && connected && (
+            <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+              ⚠ 当前为 HTTP 环境，浏览器禁用了麦克风。请通过 HTTPS 访问以使用语音输入，或使用上方文字输入。
+            </p>
+          )}
         </div>
       </div>
 
