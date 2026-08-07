@@ -1091,6 +1091,23 @@ class AccountService:
             self._index += 1
         return self.refresh_access_token(access_token, event="get_text_access_token") or access_token
 
+    def get_realtime_access_token(self) -> str:
+        """获取一个支持语音的 Plus/Team/Pro 账号 token。"""
+        voice_plan_types = {"plus", "team", "pro"}
+        with self._lock:
+            candidates = [
+                token
+                for account in self._accounts.values()
+                if account.get("status") not in {"禁用", "异常"}
+                and self._normalize_account_type(account.get("type")).lower() in voice_plan_types
+                and (token := account.get("access_token") or "")
+            ]
+            if not candidates:
+                raise RuntimeError("no available realtime-capable account (plus/team/pro required)")
+            token = candidates[self._index % len(candidates)]
+            self._index += 1
+        return self.refresh_access_token(token, event="get_realtime_access_token") or token
+
     def mark_text_used(self, access_token: str) -> None:
         if not access_token:
             return

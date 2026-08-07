@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPT Realtime Voice Debug</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+h1 { font-size: 1.4em; margin-bottom: 16px; color: #00d4aa; }
+.panel { display: grid; grid-template-columns: 300px 1fr; gap: 16px; max-width: 1200px; }
+.controls { background: #16213e; border-radius: 8px; padding: 16px; }
+.controls label { display: block; font-size: 0.85em; color: #aaa; margin-top: 12px; }
+.controls input, .controls select { width: 100%; padding: 8px; margin-top: 4px; background: #0f3460; border: 1px solid #333; border-radius: 4px; color: #fff; font-size: 0.9em; }
+.controls button { width: 100%; padding: 10px; margin-top: 16px; border: none; border-radius: 6px; font-size: 1em; cursor: pointer; font-weight: 600; }
+#btn-connect { background: #00d4aa; color: #000; }
+#btn-connect.connected { background: #e74c3c; }
+#btn-connect:disabled { opacity: 0.5; cursor: not-allowed; }
+.status { margin-top: 12px; padding: 8px; background: #0a0a1a; border-radius: 4px; font-size: 0.8em; font-family: monospace; }
+.output { background: #16213e; border-radius: 8px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 500px; }
+#waveform { width: 100%; height: 80px; background: #0a0a1a; border-radius: 4px; }
+#event-log { flex: 1; background: #0a0a1a; border-radius: 4px; padding: 12px; overflow-y: auto; font-family: monospace; font-size: 0.75em; line-height: 1.6; max-height: 400px; }
+.log-entry { padding: 2px 0; border-bottom: 1px solid #1a1a2e; }
+.log-entry.send { color: #5dade2; }
+.log-entry.recv { color: #58d68d; }
+.log-entry.error { color: #e74c3c; }
+.log-entry.info { color: #f39c12; }
+</style>
+</head>
+<body>
+<h1>GPT Realtime Voice Debug</h1>
+<div class="panel">
+  <div class="controls">
+    <label>API Key
+      <input type="password" id="api-key" placeholder="sk-..." />
+    </label>
+    <label>Model
+      <select id="model">
+        <option value="gpt-4o-realtime-preview">gpt-4o-realtime-preview</option>
+        <option value="gpt-realtime-2.1">gpt-realtime-2.1</option>
+      </select>
+    </label>
+    <label>Voice
+      <select id="voice">
+        <option value="ember">Ember</option>
+        <option value="glimmer">Sol (Glimmer)</option>
+        <option value="breeze">Breeze</option>
+        <option value="cove">Cove</option>
+        <option value="juniper">Juniper</option>
+        <option value="maple">Maple</option>
+        <option value="orbit">Spruce (Orbit)</option>
+        <option value="vale">Vale</option>
+        <option value="fathom">Arbor (Fathom)</option>
+      </select>
+    </label>
+    <button id="btn-connect">连接</button>
+    <div class="status" id="status">未连接</div>
+  </div>
+  <div class="output">
+    <canvas id="waveform"></canvas>
+    <div id="event-log"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let ws = null;
+let audioCtx = null;
+let micStream = null;
+let scriptNode = null;
+let playbackQueue = [];
+let isConnected = false;
+
+function log(msg, cls = 'info') {
+  const el = $('event-log');
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${cls}`;
+  const ts = new Date().toLocaleTimeString('en-US', {hour12:false, fractionalSecondDigits:3});
+  entry.textContent = `[${ts}] ${msg}`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(text) { $('status').textContent = text; }
+
+$('btn-connect').onclick = async () => {
+  if (isConnected) { disconnect(); return; }
+  await connect();
+};
+
+async function connect() {
+  const apiKey = $('api-key').value.trim();
+  if (!apiKey) { log('请输入 API Key', 'error'); return; }
+
+  const model = $('model').value;
+  const voice = $('voice').value;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/v1/realtime?model=${model}`;
+
+  const wsUrl = `${url}&authorization=${encodeURIComponent('Bearer ' + apiKey)}`;
+  setStatus('连接中...');
+  log(`Connecting to ${url}`);
+
+  ws = new WebSocket(wsUrl);
+  ws.onopen = onWsOpen;
+  ws.onmessage = onWsMessage;
+  ws.onclose = onWsClose;
+  ws.onerror = onWsError;
+}
+
+async function onWsOpen() {
+  isConnected = true;
+  $('btn-connect').textContent = '断开';
+  $('btn-connect').classList.add('connected');
+  setStatus('已连接 — 等待 session.created');
+  log('WebSocket connected', 'info');
+
+  // 发送 session.update 设置 voice
+  sendEvent({ type: 'session.update', session: { voice: $('voice').value } });
+
+  // 启动麦克风
+  await startMicrophone();
+}
+
+function onWsMessage(e) {
+  try {
+    const event = JSON.parse(e.data);
+    const type = event.type || 'unknown';
+
+    if (type === 'response.audio.delta') {
+      const pcm = base64ToArrayBuffer(event.delta);
+      playAudio(pcm);
+      log(`← audio.delta (${pcm.byteLength} bytes)`, 'recv');
+    } else if (type === 'response.audio.done') {
+      log('← audio.done', 'recv');
+    } else if (type === 'session.created') {
+      setStatus('会话已建立 — 可以说话');
+      log(`← session.created: ${JSON.stringify(event.session || {})}`, 'recv');
+    } else if (type === 'error') {
+      log(`← ERROR: ${JSON.stringify(event.error)}`, 'error');
+    } else {
+      log(`← ${type}: ${JSON.stringify(event).substring(0, 200)}`, 'recv');
+    }
+  } catch (err) {
+    log(`← [parse error] ${e.data.substring(0, 100)}`, 'error');
+  }
+}
+
+function onWsClose(e) {
+  isConnected = false;
+  $('btn-connect').textContent = '连接';
+  $('btn-connect').classList.remove('connected');
+  setStatus(`已断开 (code=${e.code})`);
+  log(`WebSocket closed: code=${e.code} reason=${e.reason}`, 'info');
+  stopMicrophone();
+}
+
+function onWsError(e) {
+  log('WebSocket error', 'error');
+}
+
+function disconnect() {
+  if (ws) ws.close();
+  stopMicrophone();
+}
+
+function sendEvent(event) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(event));
+    log(`→ ${event.type}`, 'send');
+  }
+}
+
+// --- 麦克风 ---
+async function startMicrophone() {
+  try {
+    audioCtx = new AudioContext({ sampleRate: 48000 });
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 48000, channelCount: 1, echoCancellation: true } });
+
+    const source = audioCtx.createMediaStreamSource(micStream);
+    // 使用 ScriptProcessorNode（兼容性好）
+    scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+    scriptNode.onaudioprocess = (e) => {
+      if (!isConnected) return;
+      const float32 = e.inputBuffer.getChannelData(0);
+      const pcm16 = float32ToPcm16(float32);
+      const b64 = arrayBufferToBase64(pcm16.buffer);
+      sendEventQuiet({ type: 'input_audio_buffer.append', audio: b64 });
+    };
+    source.connect(scriptNode);
+    scriptNode.connect(audioCtx.destination);
+    log('Microphone started (48kHz mono)', 'info');
+    startWaveform(source);
+  } catch (err) {
+    log(`Microphone error: ${err.message}`, 'error');
+  }
+}
+
+function stopMicrophone() {
+  if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+}
+
+function sendEventQuiet(event) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(event));
+  }
+}
+
+// --- 音频播放 ---
+let playbackTime = 0;
+function playAudio(pcmBuffer) {
+  if (!audioCtx) audioCtx = new AudioContext({ sampleRate: 48000 });
+  const samples = new Int16Array(pcmBuffer);
+  const float32 = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) float32[i] = samples[i] / 32768;
+
+  const buffer = audioCtx.createBuffer(1, float32.length, 48000);
+  buffer.getChannelData(0).set(float32);
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+  if (playbackTime < now) playbackTime = now;
+  source.start(playbackTime);
+  playbackTime += buffer.duration;
+}
+
+// --- 波形可视化 ---
+function startWaveform(source) {
+  const canvas = $('waveform');
+  const ctx = canvas.getContext('2d');
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  source.connect(analyser);
+  const data = new Uint8Array(analyser.frequencyBinCount);
+
+  function draw() {
+    if (!isConnected) return;
+    requestAnimationFrame(draw);
+    analyser.getByteTimeDomainData(data);
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#00d4aa';
+    ctx.beginPath();
+    const sliceWidth = canvas.width / data.length;
+    let x = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i] / 128.0;
+      const y = v * canvas.height / 2;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      x += sliceWidth;
+    }
+    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.stroke();
+  }
+  canvas.width = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+  draw();
+}
+
+// --- 工具函数 ---
+function float32ToPcm16(float32) {
+  const pcm16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return pcm16;
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+</script>
+</body>
+</html>
