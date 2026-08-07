@@ -113,6 +113,24 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(account["realtime_status"], "unknown")
             self.assertIsNone(account["realtime_restore_at"])
 
+    def test_realtime_quota_event_overrides_recent_available_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items(
+                [{"access_token": "token-voice", "type": "Plus", "status": "正常"}]
+            )
+
+            service.mark_realtime_available("token-voice")
+            limited = service.mark_realtime_unavailable(
+                "token-voice",
+                status="limited",
+                reason="cap_reached",
+                cooldown_seconds=3600,
+            )
+
+            self.assertEqual(limited["realtime_status"], "limited")
+            self.assertEqual(limited["realtime_limit_reason"], "cap_reached")
+
     def test_split_image_model_supports_plan_type_prefix(self) -> None:
         self.assertEqual(split_image_model("gpt-image-2"), (None, "gpt-image-2"))
         self.assertEqual(split_image_model("plus-codex-gpt-image-2"), ("plus", "codex-gpt-image-2"))

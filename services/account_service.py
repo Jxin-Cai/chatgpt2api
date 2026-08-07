@@ -1174,13 +1174,6 @@ class AccountService:
             current = self._accounts.get(access_token)
             if current is None:
                 return None
-            last_checked = self._parse_time(current.get("realtime_last_checked_at"))
-            if (
-                current.get("realtime_status") == "available"
-                and last_checked is not None
-                and (now - last_checked).total_seconds() < 300
-            ):
-                return dict(current)
             next_item = dict(current)
             next_item["realtime_status"] = status
             next_item["realtime_restore_at"] = parsed_restore.isoformat()
@@ -1212,6 +1205,13 @@ class AccountService:
             current = self._accounts.get(access_token)
             if current is None:
                 return None
+            last_checked = self._parse_time(current.get("realtime_last_checked_at"))
+            if (
+                current.get("realtime_status") == "available"
+                and last_checked is not None
+                and (now - last_checked).total_seconds() < 300
+            ):
+                return dict(current)
             next_item = dict(current)
             next_item["realtime_status"] = "available"
             next_item["realtime_restore_at"] = None
