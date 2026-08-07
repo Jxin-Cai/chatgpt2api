@@ -8,8 +8,22 @@ from aiortc import RTCPeerConnection, RTCSessionDescription
 
 from services.realtime.audio_track import BufferedAudioStreamTrack
 
+REALTIME_DEFAULT_VOICE = "ember"
+REALTIME_VOICES: tuple[dict[str, str], ...] = (
+    {"id": "ember", "name": "Ember", "description": "自信乐观"},
+    {"id": "glimmer", "name": "Sol", "description": "聪慧随性"},
+    {"id": "breeze", "name": "Breeze", "description": "活泼认真"},
+    {"id": "cove", "name": "Cove", "description": "沉稳直率"},
+    {"id": "juniper", "name": "Juniper", "description": "开放豁达"},
+    {"id": "maple", "name": "Maple", "description": "开朗直率"},
+    {"id": "orbit", "name": "Spruce", "description": "冷静坚定"},
+    {"id": "vale", "name": "Vale", "description": "聪颖好奇"},
+    {"id": "fathom", "name": "Arbor", "description": "随和多才"},
+)
+REALTIME_VOICE_IDS = frozenset(voice["id"] for voice in REALTIME_VOICES)
 
-def build_session_config(voice: str = "ember", language: str = "auto") -> dict[str, Any]:
+
+def build_session_config(voice: str = REALTIME_DEFAULT_VOICE, language: str = "auto") -> dict[str, Any]:
     return {
         "backend_reasoning_effort": "instant",
         "language_code": language,

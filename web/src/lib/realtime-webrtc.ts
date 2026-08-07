@@ -12,10 +12,12 @@ type ConnectOptions = {
 type RealtimeWebRTCHandlers = {
   onEvent: (event: RealtimeEvent) => void;
   onConnectionState: (state: RTCPeerConnectionState) => void;
+  onRemoteStream?: (stream: MediaStream) => void;
 };
 
 const CONNECTION_TIMEOUT_MS = 15_000;
 const ICE_GATHERING_TIMEOUT_MS = 5_000;
+const DATA_CHANNEL_TIMEOUT_MS = 10_000;
 
 function decodeDataChannelMessage(raw: string): RealtimeEvent {
   const outer = JSON.parse(raw) as RealtimeEvent & { data?: string | RealtimeEvent };
@@ -73,10 +75,36 @@ function waitForConnection(pc: RTCPeerConnection): Promise<void> {
   });
 }
 
+function waitForDataChannel(channel: RTCDataChannel): Promise<void> {
+  if (channel.readyState === "open") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error(`实时事件通道连接超时 (${channel.readyState})`));
+    }, DATA_CHANNEL_TIMEOUT_MS);
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("实时事件通道已关闭"));
+    };
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      channel.removeEventListener("open", onOpen);
+      channel.removeEventListener("close", onClose);
+    };
+    channel.addEventListener("open", onOpen);
+    channel.addEventListener("close", onClose);
+  });
+}
+
 export class RealtimeWebRTCConnection {
   private pc: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
   private microphone: MediaStream | null = null;
+  private remoteStream: MediaStream | null = null;
   private audioElement: HTMLAudioElement | null = null;
   private closed = true;
 
@@ -97,7 +125,9 @@ export class RealtimeWebRTCConnection {
     pc.ontrack = (event) => {
       const [stream] = event.streams;
       if (stream) {
+        this.remoteStream = stream;
         audio.srcObject = stream;
+        this.handlers.onRemoteStream?.(stream);
         void audio.play().catch(() => undefined);
       }
     };
@@ -177,7 +207,7 @@ export class RealtimeWebRTCConnection {
 
     if (this.closed) throw new Error("连接已取消");
     await pc.setRemoteDescription({ type: "answer", sdp: normalizeSdpLineEndings(result.sdp) });
-    await waitForConnection(pc);
+    await Promise.all([waitForConnection(pc), waitForDataChannel(dc)]);
     return { location: result.location || "" };
   }
 
@@ -205,6 +235,10 @@ export class RealtimeWebRTCConnection {
     return this.microphone;
   }
 
+  getRemoteStream(): MediaStream | null {
+    return this.remoteStream;
+  }
+
   close(): void {
     this.closed = true;
     if (this.dataChannel?.readyState === "open") {
@@ -214,6 +248,7 @@ export class RealtimeWebRTCConnection {
     this.dataChannel = null;
     this.microphone?.getTracks().forEach((track) => track.stop());
     this.microphone = null;
+    this.remoteStream = null;
     if (this.audioElement) {
       this.audioElement.pause();
       this.audioElement.srcObject = null;

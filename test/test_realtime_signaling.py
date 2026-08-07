@@ -34,3 +34,43 @@ def test_direct_realtime_signaling_proxies_sdp_without_exposing_upstream_token()
     exchange.assert_awaited_once()
     assert exchange.await_args.kwargs["access_token"] == "upstream-secret-token"
     assert "upstream-secret-token" not in response.text
+
+
+def test_realtime_capabilities_and_voices_require_api_key():
+    app = FastAPI()
+    app.include_router(realtime.create_router())
+    client = TestClient(app)
+
+    unauthorized = client.get("/v1/realtime/capabilities")
+    assert unauthorized.status_code == 401
+
+    with mock.patch.object(realtime, "require_identity", return_value={"name": "tester"}):
+        capabilities = client.get(
+            "/v1/realtime/capabilities",
+            headers={"Authorization": "Bearer client-key"},
+        )
+        voices = client.get(
+            "/v1/realtime/voices",
+            headers={"Authorization": "Bearer client-key"},
+        )
+
+    assert capabilities.status_code == 200
+    assert capabilities.json()["transports"]["webrtc"]["recommended"] is True
+    assert capabilities.json()["transports"]["websocket"]["input_audio_format"] == "pcm16_mono_48000"
+    assert capabilities.json()["authentication"] == "bearer"
+    assert voices.status_code == 200
+    assert voices.json()["data"][0]["id"] == capabilities.json()["default_voice"]
+    assert {voice["id"] for voice in voices.json()["data"]} == realtime.REALTIME_VOICE_IDS
+
+
+def test_realtime_signaling_rejects_unknown_voice_before_contacting_upstream():
+    app = FastAPI()
+    app.include_router(realtime.create_router())
+
+    response = TestClient(app).post(
+        "/v1/realtime/sessions",
+        headers={"Authorization": "Bearer client-key"},
+        json={"sdp": "v=0\r\n" + "a=x\r\n" * 30, "voice": "unknown"},
+    )
+
+    assert response.status_code == 422

@@ -119,6 +119,7 @@ environment:
 - 兼容 `POST /v1/images/edits` 图片编辑接口
 - 兼容面向图片场景的 `POST /v1/chat/completions`
 - 兼容面向图片场景的 `POST /v1/responses`
+- 提供 Realtime WebRTC 信令、语音列表、能力发现和 WebSocket 音频桥接接口
 - `GET /v1/models` 返回 `gpt-image-2`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、
   `gpt-5-mini`
 - 支持通过 `n` 返回多张生成结果
@@ -357,6 +358,192 @@ curl http://localhost:8000/v1/responses \
 <br>
 </details>
 </details>
+
+### 实时语音 API
+
+实时语音接口同样使用项目的 API Key：
+
+```http
+Authorization: Bearer <auth-key>
+```
+
+| 端点 | 用途 |
+|:--|:--|
+| `GET /v1/realtime/capabilities` | 获取支持的传输方式、音频格式和相关端点 |
+| `GET /v1/realtime/voices` | 获取可用声音列表 |
+| `POST /v1/realtime/sessions` | 交换 WebRTC SDP，媒体随后在客户端和上游之间直连 |
+| `WS /v1/realtime` | 服务端 WebSocket 音频桥接，适合无法使用 WebRTC 的客户端 |
+
+浏览器、App 和桌面客户端推荐使用 WebRTC。服务端只处理 API Key 鉴权和 SDP
+信令，不会把上游账号 Token 暴露给客户端；音频媒体不经过本服务进行
+Base64 转码，因此延迟和抖动更低。
+
+#### 查询能力和声音
+
+```bash
+curl http://localhost:8000/v1/realtime/capabilities \
+  -H "Authorization: Bearer <auth-key>"
+
+curl http://localhost:8000/v1/realtime/voices \
+  -H "Authorization: Bearer <auth-key>"
+```
+
+#### 浏览器 WebRTC 接入
+
+下面是完整的最小接入示例。生产代码还应处理麦克风拒绝授权、连接超时、
+ICE 失败和页面卸载时的资源释放。
+
+```js
+const baseUrl = "http://localhost:8000";
+const apiKey = "<auth-key>";
+
+const pc = new RTCPeerConnection();
+const remoteAudio = new Audio();
+remoteAudio.autoplay = true;
+
+pc.ontrack = ({ streams: [stream] }) => {
+  remoteAudio.srcObject = stream;
+};
+
+const microphone = await navigator.mediaDevices.getUserMedia({
+  audio: {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  },
+});
+microphone.getTracks().forEach((track) => pc.addTrack(track, microphone));
+pc.addTransceiver("video", { direction: "sendonly" });
+
+// ChatGPT Web Voice 使用协商好的 id=0 DataChannel。
+const dc = pc.createDataChannel("", {
+  negotiated: true,
+  id: 0,
+  ordered: true,
+});
+
+dc.onmessage = ({ data }) => {
+  const outer = JSON.parse(data);
+  const event = outer.type === "data_message"
+    ? JSON.parse(outer.data)
+    : outer;
+  console.log("realtime event", event);
+};
+
+dc.onopen = () => {
+  dc.send(JSON.stringify({
+    type: "data_message",
+    data: JSON.stringify({
+      type: "track_state",
+      payload: {
+        type: "track_state",
+        track_id: "microphone",
+        media_type: "audio",
+        media_source: "microphone",
+        state: "live",
+      },
+    }),
+  }));
+};
+
+await pc.setLocalDescription(await pc.createOffer());
+
+// 等待 host ICE candidate 收集完成后再提交 SDP。
+if (pc.iceGatheringState !== "complete") {
+  await new Promise((resolve) => {
+    let timer;
+    const finish = () => {
+      clearTimeout(timer);
+      pc.removeEventListener("icegatheringstatechange", done);
+      resolve();
+    };
+    const done = () => {
+      if (pc.iceGatheringState === "complete") {
+        finish();
+      }
+    };
+    pc.addEventListener("icegatheringstatechange", done);
+    timer = setTimeout(finish, 5000);
+  });
+}
+
+const response = await fetch(`${baseUrl}/v1/realtime/sessions`, {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    sdp: pc.localDescription.sdp,
+    voice: "ember",
+    language: "auto",
+  }),
+});
+
+if (!response.ok) throw new Error(`signaling failed: ${response.status}`);
+const answer = await response.json();
+const answerSdp = `${answer.sdp.trim().replace(/\r?\n/g, "\r\n")}\r\n`;
+await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+```
+
+文字消息也通过 DataChannel 发送，并使用双层 `data_message` 封装：
+
+```js
+function sendRealtimeEvent(event) {
+  dc.send(JSON.stringify({
+    type: "data_message",
+    data: JSON.stringify(event),
+  }));
+}
+
+sendRealtimeEvent({
+  type: "conversation.item.create",
+  item: {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "你好" }],
+  },
+});
+sendRealtimeEvent({ type: "response.create" });
+```
+
+客户端应关注以下事件类别：
+
+- `state_update`：`listening`、`thinking`、`speaking` 等会话状态。
+- `input_audio_buffer.speech_started` / `speech_stopped`：用户开始或停止说话。
+- `conversation.item.input_audio_transcription.*`：用户语音转写。
+- `response.output_audio_transcript.*`、`response.audio_transcript.*`：AI 语音转写。
+- `chat_message_delta`：ChatGPT Web Voice 使用的增量消息流；其中包含 user 和
+  assistant 的文字 JSON Patch，接入方需要按 message id 顺序合并。
+- `usage_update` / `goodbye`：额度状态和会话结束原因。
+
+#### WebSocket 音频桥接
+
+不能使用 WebRTC 时，可以连接：
+
+```text
+ws://localhost:8000/v1/realtime
+```
+
+非浏览器客户端应通过 `Authorization: Bearer <auth-key>` 请求头鉴权。浏览器原生
+WebSocket 无法设置自定义请求头，可使用 `?api_key=<auth-key>`；但 URL 可能进入
+代理访问日志，因此浏览器仍推荐使用上面的 WebRTC 方案。
+
+输入音频为 `48 kHz / PCM16 / 单声道 / little-endian`，按 Base64 分片发送：
+
+```json
+{"type":"input_audio_buffer.append","audio":"<base64-pcm16>"}
+```
+
+服务端返回的 `response.audio.delta` 同样是 `48 kHz PCM16` 的 Base64 数据：
+
+```json
+{"type":"response.audio.delta","delta":"<base64-pcm16>"}
+```
+
+建议每个输入分片控制在 `20–100 ms`。单条 Base64 字符串最大为 `512000`
+字符；客户端应持续消费返回消息，并在结束时主动关闭 WebSocket。
 
 ## 社区支持
 
