@@ -68,6 +68,51 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(updated["quota"], 0)
             self.assertEqual(updated["status"], "限流")
 
+    def test_realtime_limit_is_persisted_and_skipped_until_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            storage = JSONStorageBackend(Path(tmp_dir) / "accounts.json")
+            service = AccountService(storage)
+            service.add_account_items(
+                [
+                    {"access_token": "token-limited", "type": "Plus", "status": "正常"},
+                    {"access_token": "token-ready", "type": "Plus", "status": "正常"},
+                ]
+            )
+
+            limited = service.mark_realtime_unavailable(
+                "token-limited",
+                status="limited",
+                reason="cap_reached",
+                cooldown_seconds=3600,
+            )
+
+            self.assertEqual(limited["realtime_status"], "limited")
+            self.assertEqual(service.get_realtime_access_token(), "token-ready")
+            reloaded = AccountService(storage).get_account("token-limited")
+            self.assertEqual(reloaded["realtime_status"], "limited")
+            self.assertEqual(reloaded["realtime_limit_reason"], "cap_reached")
+            self.assertIsNotNone(reloaded["realtime_restore_at"])
+
+    def test_realtime_limit_automatically_recovers_after_restore_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items(
+                [
+                    {
+                        "access_token": "token-recovered",
+                        "type": "Plus",
+                        "status": "正常",
+                        "realtime_status": "limited",
+                        "realtime_restore_at": "2020-01-01T00:00:00+00:00",
+                    }
+                ]
+            )
+
+            self.assertEqual(service.get_realtime_access_token(), "token-recovered")
+            account = service.get_account("token-recovered")
+            self.assertEqual(account["realtime_status"], "unknown")
+            self.assertIsNone(account["realtime_restore_at"])
+
     def test_split_image_model_supports_plan_type_prefix(self) -> None:
         self.assertEqual(split_image_model("gpt-image-2"), (None, "gpt-image-2"))
         self.assertEqual(split_image_model("plus-codex-gpt-image-2"), ("plus", "codex-gpt-image-2"))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
@@ -38,6 +39,21 @@ class RealtimeOffer(BaseModel):
         return normalized
 
 
+class RealtimeQuotaReport(BaseModel):
+    reason: str = Field(default="quota_exhausted", max_length=120)
+    restore_at: datetime | None = None
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=7 * 24 * 60 * 60)
+
+    @field_validator("restore_at")
+    @classmethod
+    def normalize_restore_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+
 def _error_response(
     *,
     status_code: int,
@@ -46,6 +62,7 @@ def _error_response(
     request_id: str,
     retryable: bool,
     retry_after: int | None = None,
+    attempt_id: str | None = None,
 ) -> JSONResponse:
     error: dict[str, object] = {
         "code": code,
@@ -57,7 +74,10 @@ def _error_response(
     if retry_after is not None:
         error["retry_after_ms"] = retry_after * 1000
         headers["Retry-After"] = str(retry_after)
-    return JSONResponse({"error": error}, status_code=status_code, headers=headers)
+    payload: dict[str, object] = {"error": error}
+    if attempt_id:
+        payload["attempt_id"] = attempt_id
+    return JSONResponse(payload, status_code=status_code, headers=headers)
 
 
 def create_router() -> APIRouter:
@@ -122,10 +142,11 @@ def create_router() -> APIRouter:
                 retry_after=retry_after,
             )
         attempt_id, excluded = realtime_signaling_guard.open_attempt(identity_key, offer.attempt_id)
+        access_token = ""
         try:
             access_token = account_service.get_realtime_access_token(excluded)
-            realtime_signaling_guard.record_account(attempt_id, access_token)
             async with realtime_signaling_guard.signaling_slot():
+                realtime_signaling_guard.record_account(attempt_id, access_token)
                 answer_sdp, location = await exchange_realtime_sdp(
                     access_token=access_token,
                     offer_sdp=offer.sdp,
@@ -140,20 +161,44 @@ def create_router() -> APIRouter:
                 request_id=request_id,
                 retryable=True,
                 retry_after=1,
+                attempt_id=attempt_id,
             )
         except UpstreamSignalingError as exc:
             logger.warning(
                 f"[realtime] Upstream signaling failed: request_id={request_id}, "
                 f"status={exc.status_code}, detail_length={len(exc.detail)}"
             )
-            status_code = 429 if exc.status_code == 429 else 502
+            account_limited = exc.is_quota_limited
+            account_unavailable = exc.status_code in {401, 403} and not account_limited
+            cooldown_seconds = (
+                exc.retry_after_seconds
+                or (realtime_signaling_guard.quota_cooldown_seconds if account_limited else 300)
+            )
+            if access_token and (account_limited or account_unavailable):
+                realtime_signaling_guard.cool_account(access_token, cooldown_seconds)
+                account_service.mark_realtime_unavailable(
+                    access_token,
+                    status="limited" if account_limited else "unavailable",
+                    reason=(
+                        "upstream_voice_quota"
+                        if account_limited
+                        else f"upstream_http_{exc.status_code}"
+                    ),
+                    cooldown_seconds=cooldown_seconds,
+                )
+            status_code = 429 if account_limited else 502
             return _error_response(
                 status_code=status_code,
-                code="realtime_upstream_rate_limit" if status_code == 429 else "realtime_upstream_error",
-                message="Upstream realtime service is temporarily unavailable",
+                code="realtime_voice_quota_limited" if account_limited else "realtime_upstream_error",
+                message=(
+                    "Selected account has exhausted its realtime voice quota"
+                    if account_limited
+                    else "Upstream realtime service is temporarily unavailable"
+                ),
                 request_id=request_id,
                 retryable=True,
-                retry_after=2 if status_code == 429 else None,
+                retry_after=min(cooldown_seconds, 5) if account_limited else None,
+                attempt_id=attempt_id,
             )
         except RuntimeError as exc:
             exhausted = "exhausted" in str(exc).lower()
@@ -167,7 +212,9 @@ def create_router() -> APIRouter:
                 request_id=request_id,
                 retryable=not exhausted,
                 retry_after=5 if not exhausted else None,
+                attempt_id=attempt_id,
             )
+        account_service.mark_realtime_available(access_token)
         logger.info(
             f"[realtime] Direct WebRTC session: request_id={request_id}, voice={offer.voice}, "
             f"identity={identity.get('name')}"
@@ -180,13 +227,29 @@ def create_router() -> APIRouter:
     @router.post("/v1/realtime/sessions/{attempt_id}/quota-exhausted")
     async def report_realtime_quota_exhausted(
         attempt_id: str,
+        report: RealtimeQuotaReport | None = None,
         authorization: str | None = Header(default=None),
     ):
         """将 DataChannel 观察到的语音额度耗尽反馈给信令账号选择器。"""
         identity = require_identity(authorization)
         identity_key = str(identity.get("id") or identity.get("name") or "anonymous")
-        marked = realtime_signaling_guard.mark_quota_exhausted(identity_key, attempt_id)
-        if not marked:
+        restore_at = report.restore_at.isoformat() if report and report.restore_at else None
+        restore_delay = (
+            max(1, int((report.restore_at - datetime.now(timezone.utc)).total_seconds()))
+            if report and report.restore_at and report.restore_at > datetime.now(timezone.utc)
+            else None
+        )
+        cooldown_seconds = (
+            restore_delay
+            or (report.retry_after_seconds if report and report.retry_after_seconds else None)
+            or realtime_signaling_guard.quota_cooldown_seconds
+        )
+        access_token = realtime_signaling_guard.mark_quota_exhausted(
+            identity_key,
+            attempt_id,
+            cooldown_seconds,
+        )
+        if not access_token:
             return _error_response(
                 status_code=404,
                 code="realtime_attempt_not_found",
@@ -194,8 +257,23 @@ def create_router() -> APIRouter:
                 request_id=uuid.uuid4().hex,
                 retryable=False,
             )
-        logger.info(f"[realtime] Voice quota cooldown recorded: identity={identity.get('name')}")
-        return {"ok": True, "cooldown_seconds": realtime_signaling_guard.quota_cooldown_seconds}
+        account_service.mark_realtime_unavailable(
+            access_token,
+            status="limited",
+            reason=report.reason if report else "quota_exhausted",
+            cooldown_seconds=cooldown_seconds,
+            restore_at=restore_at,
+        )
+        logger.info(
+            f"[realtime] Voice quota isolation persisted: identity={identity.get('name')}, "
+            f"cooldown_seconds={cooldown_seconds}"
+        )
+        return {
+            "ok": True,
+            "cooldown_seconds": cooldown_seconds,
+            "restore_at": restore_at
+            or (datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds)).isoformat(),
+        }
 
     @router.websocket("/v1/realtime")
     async def realtime_endpoint(
@@ -254,6 +332,13 @@ def create_router() -> APIRouter:
             websocket=websocket,
             access_token=access_token,
             access_token_provider=account_service.get_realtime_access_token,
+            account_available_callback=account_service.mark_realtime_available,
+            account_limited_callback=lambda token: account_service.mark_realtime_unavailable(
+                token,
+                status="limited",
+                reason="quota_exhausted",
+                cooldown_seconds=realtime_signaling_guard.quota_cooldown_seconds,
+            ),
             voice=voice,
         )
         try:

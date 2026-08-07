@@ -103,6 +103,8 @@ class RealtimeSession:
         websocket: WebSocket,
         access_token: str,
         access_token_provider: Callable[[set[str]], str] | None = None,
+        account_available_callback: Callable[[str], object] | None = None,
+        account_limited_callback: Callable[[str], object] | None = None,
         voice: str = "ember",
     ):
         self._identity = identity
@@ -111,6 +113,8 @@ class RealtimeSession:
         self._ws = websocket
         self._access_token = access_token
         self._access_token_provider = access_token_provider
+        self._account_available_callback = account_available_callback
+        self._account_limited_callback = account_limited_callback
         self._pc = None
         self._input_track: BufferedAudioStreamTrack | None = None
         self._data_channel = None
@@ -166,8 +170,12 @@ class RealtimeSession:
             try:
                 await self._start_once(access_token)
                 self._access_token = access_token
+                if self._account_available_callback:
+                    self._account_available_callback(access_token)
                 return
             except RealtimeQuotaExceeded as exc:
+                if self._account_limited_callback:
+                    self._account_limited_callback(access_token)
                 excluded.add(access_token)
                 logger.warning("[realtime] Upstream account voice quota exhausted; trying next account")
                 if self._pc:
@@ -481,6 +489,12 @@ class RealtimeSession:
                     await self._send_event(event_type, payload)
                 else:
                     await self._send_event(event_type, data)
+                quota_error = quota_error_from_message(data)
+                if quota_error:
+                    if self._account_limited_callback:
+                        self._account_limited_callback(self._access_token)
+                    await self._send_error(quota_error, code="realtime_quota_exhausted")
+                    return
             except (json.JSONDecodeError, TypeError):
                 await self._send_event("datachannel.message", {"raw": msg[:1000]})
 

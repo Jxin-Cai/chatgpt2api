@@ -25,6 +25,7 @@ export class RealtimeSignalingError extends Error {
     readonly status: number,
     readonly retryable: boolean,
     readonly retryAfterMs: number,
+    readonly attemptId: string,
   ) {
     super(message);
     this.name = "RealtimeSignalingError";
@@ -265,6 +266,7 @@ export class RealtimeWebRTCConnection {
         response.status,
         Boolean(result.error?.retryable),
         result.error?.retry_after_ms || 0,
+        result.attempt_id || options.attemptId || "",
       );
     }
 
@@ -286,13 +288,25 @@ export class RealtimeWebRTCConnection {
     };
   }
 
-  async reportQuotaExhausted(): Promise<void> {
+  async reportQuotaExhausted(details?: {
+    reason?: string;
+    restoreAt?: string;
+    retryAfterSeconds?: number;
+  }): Promise<void> {
     const report = this.sessionReport;
     if (!report?.attemptId) return;
     try {
       await fetch(`${report.signalingUrl}/${encodeURIComponent(report.attemptId)}/quota-exhausted`, {
         method: "POST",
-        headers: { Authorization: report.authorization },
+        headers: {
+          Authorization: report.authorization,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          reason: details?.reason || "quota_exhausted",
+          restore_at: details?.restoreAt,
+          retry_after_seconds: details?.retryAfterSeconds,
+        }),
         keepalive: true,
       });
     } catch {

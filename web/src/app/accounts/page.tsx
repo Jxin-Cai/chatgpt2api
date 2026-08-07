@@ -131,6 +131,20 @@ function formatRestoreAt(value?: string | null) {
   return { absolute, relative };
 }
 
+function realtimeStatusMeta(account: Account) {
+  const status = account.realtime_status || "unknown";
+  if (status === "available") {
+    return { label: "可用", className: "border-emerald-200 bg-emerald-50 text-emerald-700" };
+  }
+  if (status === "limited") {
+    return { label: "额度受限", className: "border-orange-200 bg-orange-50 text-orange-700" };
+  }
+  if (status === "unavailable") {
+    return { label: "暂时隔离", className: "border-amber-200 bg-amber-50 text-amber-700" };
+  }
+  return { label: "待检测", className: "border-stone-200 bg-stone-50 text-stone-500" };
+}
+
 function formatQuotaSummary(accounts: Account[]) {
   const availableAccounts = accounts.filter((account) => account.status === "正常");
   return formatCompact(availableAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0));
@@ -1162,7 +1176,7 @@ function AccountsPageContent() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1000px] text-left">
+              <table className="w-full min-w-[1200px] text-left">
                 <thead className="border-b border-stone-100 text-[11px] text-stone-400 uppercase tracking-[0.18em]">
                   <tr>
                     <th className="w-12 px-4 py-3">
@@ -1178,6 +1192,7 @@ function AccountsPageContent() {
                     <th className="w-56 px-4 py-3">账号信息</th>
                     <th className="w-32 px-4 py-3">创建时间</th>
                     <th className="w-24 px-4 py-3">额度</th>
+                    <th className="w-44 px-4 py-3">语音额度</th>
                     <th className="w-18 px-4 py-3">优先级</th>
                     <th className="w-40 px-4 py-3">恢复时间</th>
                     <th className="w-18 px-4 py-3">在途</th>
@@ -1262,6 +1277,25 @@ function AccountsPageContent() {
                           <Badge variant="info" className="rounded-md">
                             {formatQuota(account)}
                           </Badge>
+                        </td>
+                        <td className="px-4 py-3 text-xs leading-5 text-stone-500">
+                          {(() => {
+                            const realtime = realtimeStatusMeta(account);
+                            const restore = formatRestoreAt(account.realtime_restore_at);
+                            return (
+                              <div className="space-y-1">
+                                <Badge variant="outline" className={cn("rounded-md", realtime.className)}>
+                                  {realtime.label}
+                                </Badge>
+                                {account.realtime_limit_reason ? (
+                                  <div title={account.realtime_limit_reason}>{account.realtime_limit_reason}</div>
+                                ) : null}
+                                {account.realtime_restore_at ? (
+                                  <div title={restore.absolute}>{restore.relative || restore.absolute}</div>
+                                ) : null}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-4 py-3 text-stone-500">{account.priority ?? 0}</td>
                         <td className="px-4 py-3 text-xs leading-5 text-stone-500">

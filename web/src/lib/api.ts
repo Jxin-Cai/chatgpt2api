@@ -31,6 +31,10 @@ export type Account = {
   }>;
   default_model_slug?: string | null;
   restore_at?: string | null;
+  realtime_status?: "unknown" | "available" | "limited" | "unavailable";
+  realtime_restore_at?: string | null;
+  realtime_limit_reason?: string | null;
+  realtime_last_checked_at?: string | null;
   success: number;
   fail: number;
   /** 当前图片在途数(正在生成、尚未结束的图片数)。号池空闲时持续 > 0 表示并发槽位泄漏。 */

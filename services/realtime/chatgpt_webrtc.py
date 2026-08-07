@@ -97,7 +97,12 @@ async def exchange_realtime_sdp(
     except Exception as exc:
         raise UpstreamSignalingError(0, str(exc)[:500]) from exc
     if response.status_code != 201:
-        raise UpstreamSignalingError(response.status_code, response.text[:500])
+        retry_after = response.headers.get("retry-after")
+        try:
+            retry_after_seconds = max(1, int(float(retry_after))) if retry_after else None
+        except (TypeError, ValueError):
+            retry_after_seconds = None
+        raise UpstreamSignalingError(response.status_code, response.text[:500], retry_after_seconds)
     return response.text.strip(), response.headers.get("location", "")
 
 

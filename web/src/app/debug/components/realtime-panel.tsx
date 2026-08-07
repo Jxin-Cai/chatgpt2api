@@ -79,6 +79,37 @@ function rmsLevel(analyser: AnalyserNode | null, samples: Uint8Array): number {
   return Math.min(1, Math.sqrt(sum / samples.length) * 4.2);
 }
 
+function quotaRecoveryFromEvent(data: RealtimeEvent): {
+  restoreAt?: string;
+  retryAfterSeconds?: number;
+} {
+  let restoreAt: string | undefined;
+  let retryAfterSeconds: number | undefined;
+  const visit = (value: unknown, depth: number) => {
+    if (depth > 5 || !value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      const normalized = key.toLowerCase();
+      if (
+        !restoreAt
+        && typeof nested === "string"
+        && ["restore_at", "reset_at", "resets_at"].includes(normalized)
+      ) {
+        restoreAt = nested;
+      } else if (
+        retryAfterSeconds === undefined
+        && typeof nested === "number"
+        && ["retry_after_seconds", "reset_after_seconds", "seconds_until_reset"].includes(normalized)
+      ) {
+        retryAfterSeconds = Math.max(1, Math.round(nested));
+      } else {
+        visit(nested, depth + 1);
+      }
+    }
+  };
+  visit(data, 0);
+  return { restoreAt, retryAfterSeconds };
+}
+
 export function RealtimePanel() {
   const [voice, setVoice] = useState("ember");
   const [connected, setConnected] = useState(false);
@@ -294,7 +325,11 @@ export function RealtimePanel() {
       if ((exceeded || quotaEnded) && quotaRetryCountRef.current < MAX_QUOTA_RETRIES && !quotaRetryScheduledRef.current) {
         quotaRetryScheduledRef.current = true;
         quotaRetryCountRef.current += 1;
-        const quotaReport = realtimeRef.current?.reportQuotaExhausted();
+        const recovery = quotaRecoveryFromEvent(data);
+        const quotaReport = realtimeRef.current?.reportQuotaExhausted({
+          reason: quotaEnded ? "cap_reached" : "usage_limit",
+          ...recovery,
+        });
         addLog("info", `语音额度不足，自动切换账号 (${quotaRetryCountRef.current}/${MAX_QUOTA_RETRIES})`);
         setPhase("connecting");
         setStatusDetail("当前账号额度不足，正在无感切换");
@@ -498,6 +533,7 @@ export function RealtimePanel() {
       setStatusDetail(message);
       addLog("error", message);
       if (error instanceof RealtimeSignalingError && error.retryable) {
+        if (error.attemptId) attemptIdRef.current = error.attemptId;
         scheduleNetworkReconnect(
           `信令暂时不可用${error.status ? ` (HTTP ${error.status})` : ""}`,
           error.retryAfterMs,

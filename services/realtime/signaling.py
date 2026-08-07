@@ -23,10 +23,28 @@ class SignalingBusyError(RuntimeError):
 
 
 class UpstreamSignalingError(RuntimeError):
-    def __init__(self, status_code: int, detail: str = ""):
+    def __init__(self, status_code: int, detail: str = "", retry_after_seconds: int | None = None):
         super().__init__(f"upstream realtime signaling failed with HTTP {status_code}")
         self.status_code = status_code
         self.detail = detail
+        self.retry_after_seconds = retry_after_seconds
+
+    @property
+    def is_quota_limited(self) -> bool:
+        if self.status_code == 429:
+            return True
+        detail = self.detail.lower()
+        return self.status_code == 403 and any(
+            marker in detail
+            for marker in (
+                "daily limit",
+                "rate limit",
+                "quota",
+                "usage limit",
+                "cap_reached",
+                "limit reached",
+            )
+        )
 
 
 @dataclass
@@ -61,7 +79,7 @@ class RealtimeSignalingGuard:
             "CHATGPT2API_REALTIME_ATTEMPT_TTL_SECONDS", 300
         )
         self.quota_cooldown_seconds = _positive_int(
-            "CHATGPT2API_REALTIME_QUOTA_COOLDOWN_SECONDS", 3600
+            "CHATGPT2API_REALTIME_QUOTA_COOLDOWN_SECONDS", 86400
         )
         self._semaphore = asyncio.Semaphore(self.max_concurrency)
         self._lock = threading.Lock()
@@ -116,7 +134,12 @@ class RealtimeSignalingGuard:
                 chain.excluded_tokens.add(access_token)
                 chain.last_token = access_token
 
-    def mark_quota_exhausted(self, identity_key: str, attempt_id: str) -> bool:
+    def mark_quota_exhausted(
+        self,
+        identity_key: str,
+        attempt_id: str,
+        cooldown_seconds: int | None = None,
+    ) -> str | None:
         now = time.monotonic()
         with self._lock:
             chain = self._attempts.get(attempt_id)
@@ -126,9 +149,17 @@ class RealtimeSignalingGuard:
                 or chain.expires_at <= now
                 or not chain.last_token
             ):
-                return False
-            self._quota_cooldowns[chain.last_token] = now + self.quota_cooldown_seconds
-            return True
+                return None
+            self._quota_cooldowns[chain.last_token] = now + (
+                cooldown_seconds or self.quota_cooldown_seconds
+            )
+            return chain.last_token
+
+    def cool_account(self, access_token: str, cooldown_seconds: int) -> None:
+        if not access_token:
+            return
+        with self._lock:
+            self._quota_cooldowns[access_token] = time.monotonic() + max(1, cooldown_seconds)
 
     @asynccontextmanager
     async def signaling_slot(self):

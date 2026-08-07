@@ -229,6 +229,15 @@ class AccountService:
         normalized["limits_progress"] = limits_progress if isinstance(limits_progress, list) else []
         normalized["default_model_slug"] = normalized.get("default_model_slug") or None
         normalized["restore_at"] = normalized.get("restore_at") or None
+        realtime_status = str(normalized.get("realtime_status") or "unknown").strip().lower()
+        normalized["realtime_status"] = (
+            realtime_status
+            if realtime_status in {"unknown", "available", "limited", "unavailable"}
+            else "unknown"
+        )
+        normalized["realtime_restore_at"] = normalized.get("realtime_restore_at") or None
+        normalized["realtime_limit_reason"] = normalized.get("realtime_limit_reason") or None
+        normalized["realtime_last_checked_at"] = normalized.get("realtime_last_checked_at") or None
         normalized["priority"] = int(normalized.get("priority") or 0)
         normalized["success"] = int(normalized.get("success") or 0)
         normalized["fail"] = int(normalized.get("fail") or 0)
@@ -1096,21 +1105,124 @@ class AccountService:
         voice_plan_types = {"plus", "team", "pro"}
         excluded = excluded or set()
         with self._lock:
-            candidates = [
-                token
+            now = datetime.now(timezone.utc)
+            recovered = False
+            for token, current in list(self._accounts.items()):
+                if current.get("realtime_status") not in {"limited", "unavailable"}:
+                    continue
+                restore_at = self._parse_time(current.get("realtime_restore_at"))
+                if restore_at is None or restore_at > now:
+                    continue
+                next_item = dict(current)
+                next_item["realtime_status"] = "unknown"
+                next_item["realtime_restore_at"] = None
+                next_item["realtime_limit_reason"] = None
+                account = self._normalize_account(next_item)
+                if account is not None:
+                    self._accounts[token] = account
+                    recovered = True
+            if recovered:
+                self._save_accounts()
+            eligible = [
+                account
                 for account in self._accounts.values()
                 if account.get("status") not in {"禁用", "异常"}
                 and self._normalize_account_type(account.get("type")).lower() in voice_plan_types
-                and (token := account.get("access_token") or "")
+                and (account.get("access_token") or "")
+            ]
+            schedulable = [
+                account for account in eligible
+                if account.get("realtime_status") not in {"limited", "unavailable"}
+            ]
+            candidates = [
+                token
+                for account in schedulable
+                if (token := account.get("access_token") or "")
                 and token not in excluded
             ]
             if not candidates:
-                if excluded:
+                if eligible and all(account.get("realtime_status") == "limited" for account in eligible):
                     raise RuntimeError("all available realtime accounts have exhausted their voice quota")
+                if eligible and not schedulable:
+                    raise RuntimeError("all realtime-capable accounts are temporarily isolated")
+                if excluded and schedulable:
+                    raise RuntimeError("all realtime-capable accounts have already been attempted")
                 raise RuntimeError("no available realtime-capable account (plus/team/pro required)")
             token = candidates[self._index % len(candidates)]
             self._index += 1
         return self.refresh_access_token(token, event="get_realtime_access_token") or token
+
+    def mark_realtime_unavailable(
+        self,
+        access_token: str,
+        *,
+        status: str,
+        reason: str,
+        cooldown_seconds: int,
+        restore_at: str | None = None,
+    ) -> dict | None:
+        """Persist account-scoped voice isolation so it survives retries and restarts."""
+        if status not in {"limited", "unavailable"} or not access_token:
+            return None
+        now = datetime.now(timezone.utc)
+        parsed_restore = self._parse_time(restore_at)
+        if parsed_restore is None or parsed_restore <= now:
+            parsed_restore = now + timedelta(seconds=max(1, cooldown_seconds))
+        parsed_restore = min(parsed_restore, now + timedelta(days=7))
+        with self._lock:
+            access_token = self._resolve_access_token_locked(access_token)
+            current = self._accounts.get(access_token)
+            if current is None:
+                return None
+            last_checked = self._parse_time(current.get("realtime_last_checked_at"))
+            if (
+                current.get("realtime_status") == "available"
+                and last_checked is not None
+                and (now - last_checked).total_seconds() < 300
+            ):
+                return dict(current)
+            next_item = dict(current)
+            next_item["realtime_status"] = status
+            next_item["realtime_restore_at"] = parsed_restore.isoformat()
+            next_item["realtime_limit_reason"] = str(reason or "unknown")[:120]
+            next_item["realtime_last_checked_at"] = now.isoformat()
+            account = self._normalize_account(next_item)
+            if account is None:
+                return None
+            self._accounts[access_token] = account
+            self._save_accounts()
+            log_service.add(
+                LOG_TYPE_ACCOUNT,
+                "隔离实时语音账号",
+                {
+                    "token": anonymize_token(access_token),
+                    "status": status,
+                    "reason": next_item["realtime_limit_reason"],
+                    "restore_at": parsed_restore.isoformat(),
+                },
+            )
+            return dict(account)
+
+    def mark_realtime_available(self, access_token: str) -> dict | None:
+        if not access_token:
+            return None
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            access_token = self._resolve_access_token_locked(access_token)
+            current = self._accounts.get(access_token)
+            if current is None:
+                return None
+            next_item = dict(current)
+            next_item["realtime_status"] = "available"
+            next_item["realtime_restore_at"] = None
+            next_item["realtime_limit_reason"] = None
+            next_item["realtime_last_checked_at"] = now.isoformat()
+            account = self._normalize_account(next_item)
+            if account is None:
+                return None
+            self._accounts[access_token] = account
+            self._save_accounts()
+            return dict(account)
 
     def mark_text_used(self, access_token: str) -> None:
         if not access_token:
