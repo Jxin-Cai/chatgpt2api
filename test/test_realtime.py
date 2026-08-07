@@ -2,9 +2,15 @@ import asyncio
 import json
 import time
 
+from av import AudioFrame, AudioResampler
+
 from services.realtime.audio_track import BufferedAudioStreamTrack, FRAME_BYTES
 from services.realtime.session import decode_data_channel_message, quota_error_from_message
-from services.realtime.session import RealtimeQuotaExceeded, RealtimeSession
+from services.realtime.session import (
+    RealtimeQuotaExceeded,
+    RealtimeSession,
+    resample_to_pcm16_mono,
+)
 
 
 def test_audio_track_paces_buffered_frames_in_realtime():
@@ -98,3 +104,22 @@ def test_realtime_session_rotates_account_after_quota_error():
         assert session._access_token == "healthy-token"
 
     asyncio.run(run())
+
+
+def test_remote_stereo_audio_is_downmixed_to_exact_mono_pcm_size():
+    frame = AudioFrame(format="s16", layout="stereo", samples=960)
+    frame.sample_rate = 48000
+    # 同相左右声道，正确下混后仍应是可听的非零信号。
+    frame.planes[0].update((b"\xe8\x03\xe8\x03") * 960)
+    resampler = AudioResampler(format="s16", layout="mono", rate=48000)
+
+    converted = resample_to_pcm16_mono(resampler, frame)
+
+    assert len(converted) == 1
+    output_frame, pcm = converted[0]
+    assert output_frame.format.name == "s16"
+    assert output_frame.layout.name == "mono"
+    assert output_frame.sample_rate == 48000
+    assert output_frame.samples == 960
+    assert len(pcm) == 960 * 2
+    assert pcm[:2] != b"\x00\x00"

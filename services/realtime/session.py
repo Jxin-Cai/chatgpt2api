@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import struct
 import time
 from collections.abc import Callable
 from typing import Any
 
+from av import AudioFrame, AudioResampler
 from fastapi import WebSocket
 
 from services.realtime.audio_track import BufferedAudioStreamTrack, SAMPLE_RATE, FRAME_BYTES
@@ -50,6 +52,18 @@ def quota_error_from_message(message: dict[str, Any]) -> str | None:
                 detail = str(exceeded.get("description_markdown") or "audio usage exceeded")
                 return f"{title}: {detail}"
     return None
+
+
+def resample_to_pcm16_mono(
+    resampler: AudioResampler, frame: AudioFrame
+) -> list[tuple[AudioFrame, bytes]]:
+    """将 aiortc 解码帧标准化为无填充的 48kHz PCM16 mono。"""
+    result: list[tuple[AudioFrame, bytes]] = []
+    for output_frame in resampler.resample(frame):
+        pcm = bytes(output_frame.planes[0])[: output_frame.samples * 2]
+        if pcm:
+            result.append((output_frame, pcm))
+    return result
 
 
 class RealtimeSession:
@@ -299,10 +313,16 @@ class RealtimeSession:
                 logger.warning("[realtime] No remote audio track received")
                 return
 
-        logger.info(f"[realtime] Audio sender started, remote track ready")
+        logger.info("[realtime] Audio sender started, remote track ready")
+        # aiortc 的 OpusDecoder 固定输出 s16 stereo。浏览器调试面板消费的是
+        # PCM16 mono，因此必须显式下混；直接读取 plane 会把 L/R 交错样本当
+        # 成单声道，播放时长也会翻倍。
+        resampler = AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
         recv_count = 0
         non_silence_count = 0
         silence_count = 0
+        speaking = False
+        next_send_at: float | None = None
         while not self._closed:
             try:
                 frame = await asyncio.wait_for(track.recv(), timeout=5)
@@ -311,25 +331,49 @@ class RealtimeSession:
             except Exception:
                 break
 
-            pcm_bytes = bytes(frame.planes[0])
             recv_count += 1
-            # 用 RMS 能量判断是否静音（阈值 100，int16 范围 -32768~32767）
-            import struct
-            samples_check = struct.unpack(f'<{len(pcm_bytes)//2}h', pcm_bytes)
-            rms = (sum(s*s for s in samples_check[:100]) / 100) ** 0.5
-            is_silence = rms < 100
-            if recv_count <= 3 or recv_count % 500 == 0:
-                logger.info(f"[realtime] Remote audio frame #{recv_count}: rms={rms:.0f}, non_silence_total={non_silence_count}")
+            for output_frame, pcm_bytes in resample_to_pcm16_mono(resampler, frame):
 
-            if is_silence:
-                silence_count += 1
-                if silence_count > 25:  # 500ms 静音不推送
-                    continue
-            else:
-                non_silence_count += 1
+                samples_check = struct.unpack(f"<{len(pcm_bytes) // 2}h", pcm_bytes)
+                rms = (sum(sample * sample for sample in samples_check) / len(samples_check)) ** 0.5
+                is_silence = rms < 100
+
+                if recv_count <= 3 or recv_count % 500 == 0:
+                    logger.info(
+                        f"[realtime] Remote audio frame #{recv_count}: "
+                        f"source={frame.format.name}/{frame.layout.name}/{frame.sample_rate}Hz/{frame.samples}, "
+                        f"output=s16/mono/{output_frame.sample_rate}Hz/{output_frame.samples}, "
+                        f"rms={rms:.0f}, non_silence_total={non_silence_count}"
+                    )
+
+                if is_silence:
+                    if not speaking:
+                        continue
+                    silence_count += 1
+                else:
+                    non_silence_count += 1
+                    silence_count = 0
+                    if not speaking:
+                        speaking = True
+
+                # 说话段中保留最多 500ms 静音，维持词句的正确时间关系；空闲
+                # 静音则不推送，避免客户端永久累积播放队列。
                 if silence_count > 25:
+                    speaking = False
+                    silence_count = 0
+                    next_send_at = None
                     await self._send_event("response.audio.done", {})
-                silence_count = 0
+                    continue
+
+                loop = asyncio.get_running_loop()
+                now = loop.time()
+                frame_duration = output_frame.samples / output_frame.sample_rate
+                if next_send_at is None:
+                    next_send_at = now
+                else:
+                    next_send_at = max(next_send_at + frame_duration, now)
+                    await asyncio.sleep(max(0.0, next_send_at - now))
+
                 audio_b64 = base64.b64encode(pcm_bytes).decode("ascii")
                 await self._send_event("response.audio.delta", {"delta": audio_b64})
 

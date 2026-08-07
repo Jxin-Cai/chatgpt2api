@@ -82,6 +82,7 @@ export function RealtimePanel() {
   const terminalErrorRef = useRef<string>("");
   const logIdRef = useRef(0);
   const transcriptIdRef = useRef(0);
+  const startMicRef = useRef<() => Promise<void>>(async () => {});
   const logsEndRef = useRef<HTMLDivElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -142,6 +143,11 @@ export function RealtimePanel() {
         } else if (type === "session.created") {
           setStatus("会话已建立 — 可以说话");
           addLog("recv", `session.created (${data.session?.id || ""})`);
+          if (typeof navigator.mediaDevices?.getUserMedia === "function") {
+            void startMicRef.current();
+          } else {
+            addLog("info", "HTTP 环境下麦克风不可用，请使用文字输入");
+          }
         } else if (type === "session.updated") {
           addLog("recv", `session.updated: voice=${data.session?.voice}`);
         } else if (type === "state_update") {
@@ -254,6 +260,10 @@ export function RealtimePanel() {
     }
   }, [addLog, drawWaveform]);
 
+  useEffect(() => {
+    startMicRef.current = startMic;
+  }, [startMic]);
+
   const stopMic = useCallback(() => {
     if (scriptNodeRef.current) {
       scriptNodeRef.current.disconnect();
@@ -312,11 +322,6 @@ export function RealtimePanel() {
       addLog("info", "WebSocket 已连接");
       ws.send(JSON.stringify({ type: "session.update", session: { voice } }));
       addLog("send", `session.update (voice=${voice})`);
-      if (canUseMic) {
-        void startMic();
-      } else {
-        addLog("info", "HTTP 环境下麦克风不可用，请使用文字输入");
-      }
     };
     ws.onmessage = handleMessage;
     ws.onclose = (e) => {
@@ -329,7 +334,7 @@ export function RealtimePanel() {
     ws.onerror = () => {
       addLog("error", "WebSocket 错误");
     };
-  }, [voice, addLog, handleMessage, startMic, stopMic, canUseMic]);
+  }, [voice, addLog, handleMessage, stopMic]);
 
   const disconnect = useCallback(() => {
     wsRef.current?.close();
