@@ -200,9 +200,13 @@ class RealtimeSession:
 
             pcm_bytes = bytes(frame.planes[0])
             recv_count += 1
+            # 用 RMS 能量判断是否静音（阈值 100，int16 范围 -32768~32767）
+            import struct
+            samples_check = struct.unpack(f'<{len(pcm_bytes)//2}h', pcm_bytes)
+            rms = (sum(s*s for s in samples_check[:100]) / 100) ** 0.5
+            is_silence = rms < 100
             if recv_count <= 3 or recv_count % 500 == 0:
-                logger.info(f"[realtime] Remote audio frame #{recv_count}: {len(pcm_bytes)} bytes, non_silence_total={non_silence_count}")
-            is_silence = all(b == 0 for b in pcm_bytes[:20])
+                logger.info(f"[realtime] Remote audio frame #{recv_count}: rms={rms:.0f}, non_silence_total={non_silence_count}")
 
             if is_silence:
                 silence_count += 1
