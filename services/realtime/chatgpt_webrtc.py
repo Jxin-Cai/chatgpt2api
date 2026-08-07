@@ -49,6 +49,42 @@ def build_realtime_headers(access_token: str) -> dict[str, str]:
     }
 
 
+async def exchange_realtime_sdp(
+    access_token: str,
+    offer_sdp: str,
+    voice: str = "ember",
+    language: str = "auto",
+) -> tuple[str, str]:
+    """将浏览器或 aiortc 的 SDP offer 代理给 ChatGPT，返回 answer 和位置。"""
+    import asyncio
+    from curl_cffi import CurlMime
+    from curl_cffi import requests as cffi_requests
+
+    session_cfg = build_session_config(voice=voice, language=language)
+    mime = CurlMime()
+    mime.addpart(name="sdp", data=offer_sdp.encode())
+    mime.addpart(
+        name="session",
+        data=json.dumps(session_cfg).encode(),
+        content_type="application/json",
+    )
+
+    response = await asyncio.to_thread(
+        cffi_requests.post,
+        "https://chatgpt.com/realtime/wm",
+        params={"dcid": "0"},
+        multipart=mime,
+        headers=build_realtime_headers(access_token),
+        impersonate="chrome",
+        timeout=30,
+    )
+    if response.status_code != 201:
+        raise RuntimeError(
+            f"Realtime signaling failed: HTTP {response.status_code} - {response.text[:200]}"
+        )
+    return response.text.strip(), response.headers.get("location", "")
+
+
 async def create_peer_connection(
     access_token: str,
     voice: str = "ember",
@@ -59,10 +95,6 @@ async def create_peer_connection(
     Returns:
         (pc, input_audio_track, data_channel, session_location)
     """
-    import asyncio
-    from curl_cffi import requests as cffi_requests
-    from curl_cffi import CurlMime
-
     pc = RTCPeerConnection()
     input_track = BufferedAudioStreamTrack()
     pc.addTrack(input_track)
@@ -80,29 +112,16 @@ async def create_peer_connection(
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
 
-    session_cfg = build_session_config(voice=voice, language=language)
-    headers = build_realtime_headers(access_token)
-
-    mime = CurlMime()
-    mime.addpart(name="sdp", data=pc.localDescription.sdp.encode())
-    mime.addpart(name="session", data=json.dumps(session_cfg).encode(), content_type="application/json")
-
-    resp = await asyncio.to_thread(
-        cffi_requests.post,
-        "https://chatgpt.com/realtime/wm",
-        params={"dcid": "0"},
-        multipart=mime,
-        headers=headers,
-        impersonate="chrome",
-        timeout=30,
-    )
-
-    if resp.status_code != 201:
+    try:
+        answer_sdp, location = await exchange_realtime_sdp(
+            access_token=access_token,
+            offer_sdp=pc.localDescription.sdp,
+            voice=voice,
+            language=language,
+        )
+    except Exception:
         await pc.close()
-        raise RuntimeError(f"Realtime signaling failed: HTTP {resp.status_code} - {resp.text[:200]}")
-
-    answer_sdp = resp.text.strip()
-    location = resp.headers.get("location", "")
+        raise
 
     await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
 

@@ -11,9 +11,12 @@ from typing import Any
 from av import AudioFrame, AudioResampler
 from fastapi import WebSocket
 
-from services.realtime.audio_track import BufferedAudioStreamTrack, SAMPLE_RATE, FRAME_BYTES
+from services.realtime.audio_track import BufferedAudioStreamTrack, SAMPLE_RATE
 from services.realtime.chatgpt_webrtc import create_peer_connection
 from utils.log import logger
+
+MAX_INPUT_AUDIO_B64_CHARS = 512_000
+DATA_CHANNEL_QUEUE_SIZE = 512
 
 
 class RealtimeQuotaExceeded(RuntimeError):
@@ -93,7 +96,9 @@ class RealtimeSession:
         self._voice = "ember"
         self._closed = False
         self._tasks: list[asyncio.Task] = []
-        self._dc_messages: asyncio.Queue[str] = asyncio.Queue()
+        self._dc_messages: asyncio.Queue[str] = asyncio.Queue(maxsize=DATA_CHANNEL_QUEUE_SIZE)
+        self._dc_dropped_messages = 0
+        self._ws_send_lock = asyncio.Lock()
         self._start_time = time.time()
 
     async def run(self) -> None:
@@ -142,7 +147,7 @@ class RealtimeSession:
                 self._pc = None
                 self._input_track = None
                 self._data_channel = None
-                self._dc_messages = asyncio.Queue()
+                self._dc_messages = asyncio.Queue(maxsize=DATA_CHANNEL_QUEUE_SIZE)
                 if not self._access_token_provider:
                     raise
                 try:
@@ -161,7 +166,7 @@ class RealtimeSession:
         @self._data_channel.on("message")
         def on_dc_message(message):
             if isinstance(message, str):
-                self._dc_messages.put_nowait(message)
+                self._queue_dc_message(message)
 
         self._connection_ready = asyncio.Event()
 
@@ -242,7 +247,19 @@ class RealtimeSession:
                     break
         finally:
             for raw in buffered:
-                self._dc_messages.put_nowait(raw)
+                self._queue_dc_message(raw)
+
+    def _queue_dc_message(self, message: str) -> None:
+        if self._dc_messages.full():
+            try:
+                self._dc_messages.get_nowait()
+                self._dc_dropped_messages += 1
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._dc_messages.put_nowait(message)
+        except asyncio.QueueFull:
+            self._dc_dropped_messages += 1
 
     async def _client_reader(self) -> None:
         """从客户端 WebSocket 读取事件并处理。"""
@@ -265,13 +282,19 @@ class RealtimeSession:
             audio_b64 = event.get("audio", "")
             if audio_b64 and self._input_track:
                 try:
-                    pcm_data = base64.b64decode(audio_b64)
+                    if not isinstance(audio_b64, str) or len(audio_b64) > MAX_INPUT_AUDIO_B64_CHARS:
+                        raise ValueError("audio chunk is too large")
+                    pcm_data = base64.b64decode(audio_b64, validate=True)
                     self._input_track.push_pcm16(pcm_data)
                     if not hasattr(self, "_audio_log_count"):
                         self._audio_log_count = 0
                     self._audio_log_count += 1
                     if self._audio_log_count <= 3 or self._audio_log_count % 100 == 0:
-                        logger.info(f"[realtime] Audio input: chunk={self._audio_log_count}, bytes={len(pcm_data)}, queue={self._input_track._queue.qsize()}")
+                        logger.info(
+                            f"[realtime] Audio input: chunk={self._audio_log_count}, "
+                            f"bytes={len(pcm_data)}, queue={self._input_track.buffered_frames}, "
+                            f"dropped={self._input_track.dropped_frames}"
+                        )
                 except Exception as e:
                     logger.error(f"[realtime] Audio decode error: {e}")
 
@@ -340,7 +363,9 @@ class RealtimeSession:
                 frame = await asyncio.wait_for(track.recv(), timeout=5)
             except asyncio.TimeoutError:
                 continue
-            except Exception:
+            except Exception as exc:
+                if not self._closed:
+                    logger.warning(f"[realtime] Remote audio track ended: {exc}")
                 break
 
             recv_count += 1
@@ -421,9 +446,11 @@ class RealtimeSession:
             return
         payload = {"type": event_type, **data}
         try:
-            await self._ws.send_text(json.dumps(payload))
-        except Exception:
-            pass
+            async with self._ws_send_lock:
+                await self._ws.send_text(json.dumps(payload))
+        except Exception as exc:
+            if not self._closed:
+                logger.debug(f"[realtime] WebSocket send stopped: {exc}")
 
     async def _send_error(self, message: str, code: str | None = None) -> None:
         error = {"message": message}
@@ -436,9 +463,11 @@ class RealtimeSession:
             return
         self._closed = True
 
-        for task in self._tasks:
-            if not task.done():
-                task.cancel()
+        pending_tasks = [task for task in self._tasks if not task.done()]
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
 
         if self._pc:
             try:
@@ -447,4 +476,7 @@ class RealtimeSession:
                 pass
 
         duration = time.time() - self._start_time
-        logger.info(f"[realtime] Session closed after {duration:.1f}s")
+        logger.info(
+            f"[realtime] Session closed after {duration:.1f}s "
+            f"(dc_dropped={self._dc_dropped_messages})"
+        )

@@ -6,6 +6,7 @@ import { Mic, MicOff, Phone, PhoneOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { RealtimeEvent, RealtimeWebRTCConnection } from "@/lib/realtime-webrtc";
 import { getStoredAuthSession } from "@/store/auth";
 import webConfig from "@/constants/common-env";
 
@@ -34,35 +35,10 @@ const VOICES = [
   { value: "fathom", label: "Arbor (随和多才)" },
 ];
 
-// 首包先积累少量音频再播放，吸收公网 WebSocket 和浏览器主线程抖动。
-const PLAYBACK_BUFFER_SECONDS = 0.14;
-const PLAYBACK_LOW_WATER_SECONDS = 0.04;
+const MAX_QUOTA_RETRIES = 2;
 
 function ts() {
   return new Date().toLocaleTimeString("en-US", { hour12: false, fractionalSecondDigits: 2 });
-}
-
-function float32ToPcm16(float32: Float32Array): Int16Array {
-  const pcm16 = new Int16Array(float32.length);
-  for (let i = 0; i < float32.length; i++) {
-    const s = Math.max(-1, Math.min(1, float32[i]));
-    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  return pcm16;
-}
-
-function arrayBufferToBase64(buffer: ArrayBufferLike): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
 }
 
 export function RealtimePanel() {
@@ -75,18 +51,18 @@ export function RealtimePanel() {
   const [status, setStatus] = useState("未连接");
   const [textInput, setTextInput] = useState("");
 
-  const wsRef = useRef<WebSocket | null>(null);
+  const realtimeRef = useRef<RealtimeWebRTCConnection | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
-  const scriptNodeRef = useRef<ScriptProcessorNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animFrameRef = useRef<number>(0);
-  const playbackTimeRef = useRef<number>(0);
   const terminalErrorRef = useRef<string>("");
+  const quotaRetryCountRef = useRef(0);
+  const quotaRetryScheduledRef = useRef(false);
+  const quotaRetryTimerRef = useRef<number | null>(null);
+  const connectRef = useRef<(retry?: boolean) => Promise<void>>(async () => {});
   const logIdRef = useRef(0);
   const transcriptIdRef = useRef(0);
-  const startMicRef = useRef<() => Promise<void>>(async () => {});
   const logsEndRef = useRef<HTMLDivElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -113,85 +89,52 @@ export function RealtimePanel() {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [transcript]);
 
-  const playAudio = useCallback((pcmBuffer: ArrayBuffer) => {
-    if (!audioCtxRef.current) audioCtxRef.current = new AudioContext({ sampleRate: 48000 });
-    const ctx = audioCtxRef.current;
-    if (ctx.state === "suspended") void ctx.resume();
-    const samples = new Int16Array(pcmBuffer);
-    const float32 = new Float32Array(samples.length);
-    for (let i = 0; i < samples.length; i++) float32[i] = samples[i] / 32768;
-
-    const buffer = ctx.createBuffer(1, float32.length, 48000);
-    buffer.getChannelData(0).set(float32);
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-
-    const now = ctx.currentTime;
-    if (playbackTimeRef.current < now + PLAYBACK_LOW_WATER_SECONDS) {
-      playbackTimeRef.current = now + PLAYBACK_BUFFER_SECONDS;
-    }
-    source.start(playbackTimeRef.current);
-    playbackTimeRef.current += buffer.duration;
-  }, []);
-
-  const handleMessage = useCallback(
-    (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        const type = data.type || "unknown";
-
-        if (type === "response.audio.delta") {
-          const pcm = base64ToArrayBuffer(data.delta);
-          playAudio(pcm);
-          // 不记录每个 audio delta 避免刷屏
-        } else if (type === "response.audio.done") {
-          addLog("recv", "audio.done");
-        } else if (type === "session.created") {
-          setStatus("会话已建立 — 可以说话");
-          addLog("recv", `session.created (${data.session?.id || ""})`);
-          if (typeof navigator.mediaDevices?.getUserMedia === "function") {
-            void startMicRef.current();
-          } else {
-            addLog("info", "HTTP 环境下麦克风不可用，请使用文字输入");
-          }
-        } else if (type === "session.updated") {
-          addLog("recv", `session.updated: voice=${data.session?.voice}`);
-        } else if (type === "state_update") {
-          const stateLabels: Record<string, string> = {
-            listening: "上游正在聆听",
-            thinking: "上游正在思考",
-            speaking: "上游正在回答",
-            idle: "会话已建立 — 可以说话",
-          };
-          const upstreamState = data.new_state || "unknown";
-          setStatus(stateLabels[upstreamState] || `上游状态：${upstreamState}`);
-          addLog("recv", `state_update: ${data.previous_state || "?"} → ${upstreamState}`);
-        } else if (type === "response.audio_transcript.delta") {
-          addTranscript("assistant", data.delta || "");
-        } else if (type === "response.text.delta") {
-          addTranscript("assistant", data.delta || "");
-        } else if (type === "conversation.item.input_audio_transcription.delta") {
-          addTranscript("user", data.delta || "");
-        } else if (type === "conversation.item.input_audio_transcription.completed") {
-          addTranscript("user", data.transcript || "");
-        } else if (type === "error") {
-          const message = data.error?.message || "未知错误";
-          terminalErrorRef.current = message;
-          setStatus(`错误：${message}`);
-          addLog("error", `ERROR: ${JSON.stringify(data.error)}`);
-        } else {
-          addLog("recv", `${type}: ${JSON.stringify(data).substring(0, 150)}`);
-          // DataChannel 消息可能包含转录
-          if (data.transcript) {
-            addTranscript("assistant", data.transcript);
-          }
+  const handleRealtimeEvent = useCallback(
+    (data: RealtimeEvent) => {
+      const type = data.type || "unknown";
+      if (type === "state_update") {
+        const stateLabels: Record<string, string> = {
+          listening: "上游正在聆听",
+          thinking: "上游正在思考",
+          speaking: "上游正在回答",
+          idle: "会话已建立 — 可以说话",
+        };
+        const upstreamState = typeof data.new_state === "string" ? data.new_state : "unknown";
+        setStatus(stateLabels[upstreamState] || `上游状态：${upstreamState}`);
+        addLog("recv", `state_update: ${String(data.previous_state || "?")} → ${upstreamState}`);
+      } else if (type === "response.audio_transcript.delta") {
+        addTranscript("assistant", String(data.delta || ""));
+      } else if (type === "response.text.delta") {
+        addTranscript("assistant", String(data.delta || ""));
+      } else if (type === "conversation.item.input_audio_transcription.delta") {
+        addTranscript("user", String(data.delta || ""));
+      } else if (type === "conversation.item.input_audio_transcription.completed") {
+        addTranscript("user", String(data.transcript || ""));
+      } else if (type === "usage_update" || type === "goodbye") {
+        const rateLimit = data.rate_limit_message as Record<string, unknown> | undefined;
+        const exceeded = rateLimit?.exceed_limit_message as Record<string, unknown> | undefined;
+        const quotaEnded = type === "goodbye" && data.reason === "cap_reached";
+        if ((exceeded || quotaEnded) && quotaRetryCountRef.current < MAX_QUOTA_RETRIES && !quotaRetryScheduledRef.current) {
+          quotaRetryScheduledRef.current = true;
+          quotaRetryCountRef.current += 1;
+          addLog("info", `语音额度不足，自动切换账号 (${quotaRetryCountRef.current}/${MAX_QUOTA_RETRIES})`);
+          quotaRetryTimerRef.current = window.setTimeout(() => {
+            quotaRetryTimerRef.current = null;
+            void connectRef.current(true);
+          }, 100);
         }
-      } catch {
-        addLog("error", `parse error: ${String(event.data).substring(0, 100)}`);
+      } else if (type === "error") {
+        const error = data.error as Record<string, unknown> | undefined;
+        const message = String(error?.message || "未知错误");
+        terminalErrorRef.current = message;
+        setStatus(`错误：${message}`);
+        addLog("error", `ERROR: ${JSON.stringify(error)}`);
+      } else {
+        addLog("recv", `${type}: ${JSON.stringify(data).substring(0, 150)}`);
+        if (typeof data.transcript === "string") addTranscript("assistant", data.transcript);
       }
     },
-    [addLog, addTranscript, playAudio],
+    [addLog, addTranscript],
   );
 
   const canUseMic = typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
@@ -229,67 +172,43 @@ export function RealtimePanel() {
     draw();
   }, []);
 
-  const startMic = useCallback(async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      addLog("error", "麦克风不可用：需要 HTTPS 或 localhost 才能访问麦克风。可使用下方文字输入。");
-      return;
-    }
-    try {
-      if (!audioCtxRef.current) audioCtxRef.current = new AudioContext({ sampleRate: 48000 });
-      const ctx = audioCtxRef.current;
-      await ctx.resume();
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: 48000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
-      });
-      micStreamRef.current = stream;
-      const source = ctx.createMediaStreamSource(stream);
+  const startWaveform = useCallback((stream: MediaStream) => {
+    const ctx = new AudioContext();
+    audioCtxRef.current = ctx;
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    analyserRef.current = analyser;
+    drawWaveform();
+  }, [drawWaveform]);
 
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      analyserRef.current = analyser;
-
-      const scriptNode = ctx.createScriptProcessor(4096, 1, 1);
-      scriptNode.onaudioprocess = (e) => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-        const float32 = e.inputBuffer.getChannelData(0);
-        const pcm16 = float32ToPcm16(float32);
-        const b64 = arrayBufferToBase64(pcm16.buffer);
-        wsRef.current.send(JSON.stringify({ type: "input_audio_buffer.append", audio: b64 }));
-      };
-      source.connect(scriptNode);
-      scriptNode.connect(ctx.destination);
-      scriptNodeRef.current = scriptNode;
-      setMicActive(true);
-      addLog("info", "麦克风已开启");
-      drawWaveform();
-    } catch (err) {
-      addLog("error", `麦克风错误: ${(err as Error).message}`);
-    }
-  }, [addLog, drawWaveform]);
-
-  useEffect(() => {
-    startMicRef.current = startMic;
-  }, [startMic]);
-
-  const stopMic = useCallback(() => {
-    if (scriptNodeRef.current) {
-      scriptNodeRef.current.disconnect();
-      scriptNodeRef.current = null;
-    }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((t) => t.stop());
-      micStreamRef.current = null;
-    }
+  const stopWaveform = useCallback(() => {
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = 0;
     }
-    setMicActive(false);
+    analyserRef.current = null;
+    if (audioCtxRef.current) {
+      void audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
   }, []);
 
+  const startMic = useCallback(() => {
+    realtimeRef.current?.setMicrophoneEnabled(true);
+    setMicActive(true);
+    addLog("info", "麦克风已开启");
+  }, [addLog]);
+
+  const stopMic = useCallback(() => {
+    realtimeRef.current?.setMicrophoneEnabled(false);
+    setMicActive(false);
+    addLog("info", "麦克风已静音");
+  }, [addLog]);
+
   const sendTextMessage = useCallback((text: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !text.trim()) return;
+    if (!realtimeRef.current || !text.trim()) return;
     const event = {
       type: "conversation.item.create",
       item: {
@@ -298,56 +217,99 @@ export function RealtimePanel() {
         content: [{ type: "input_text", text: text.trim() }],
       },
     };
-    wsRef.current.send(JSON.stringify(event));
-    wsRef.current.send(JSON.stringify({ type: "response.create" }));
+    realtimeRef.current.sendEvent(event);
+    realtimeRef.current.sendEvent({ type: "response.create" });
     addTranscript("user", text.trim());
     addLog("send", `text: ${text.trim().substring(0, 50)}`);
     setTextInput("");
   }, [addTranscript, addLog]);
 
-  const connect = useCallback(async () => {
+  const disconnect = useCallback(() => {
+    if (quotaRetryTimerRef.current !== null) {
+      window.clearTimeout(quotaRetryTimerRef.current);
+      quotaRetryTimerRef.current = null;
+    }
+    quotaRetryScheduledRef.current = false;
+    realtimeRef.current?.close();
+    realtimeRef.current = null;
+    stopWaveform();
+    setConnected(false);
+    setConnecting(false);
+    setMicActive(false);
+    setStatus("已断开");
+  }, [stopWaveform]);
+
+  const connect = useCallback(async (retry = false) => {
     const session = await getStoredAuthSession();
     if (!session) {
       addLog("error", "未登录，请先登录");
       return;
     }
+    realtimeRef.current?.close();
+    stopWaveform();
+    setConnected(false);
+    setMicActive(false);
     setConnecting(true);
-    setStatus("连接中...");
+    setStatus(retry ? "正在切换语音账号..." : "正在建立 WebRTC...");
     terminalErrorRef.current = "";
+    quotaRetryScheduledRef.current = false;
+    if (!retry) quotaRetryCountRef.current = 0;
 
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = webConfig.apiUrl ? new URL(webConfig.apiUrl).host : window.location.host;
-    const url = `${proto}//${host}/v1/realtime?model=gpt-4o-realtime-preview&authorization=${encodeURIComponent("Bearer " + session.key)}`;
+    const signalingUrl = webConfig.apiUrl
+      ? new URL("/v1/realtime/sessions", webConfig.apiUrl).toString()
+      : "/v1/realtime/sessions";
+    const connection = new RealtimeWebRTCConnection({
+      onEvent: handleRealtimeEvent,
+      onConnectionState: (state) => {
+        addLog("info", `WebRTC: ${state}`);
+        if (state === "failed") {
+          setConnected(false);
+          setStatus("WebRTC 连接失败");
+        }
+      },
+    });
+    realtimeRef.current = connection;
 
-    addLog("info", "正在连接...");
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
+    try {
+      addLog("info", retry ? "正在切换账号并重连..." : "正在建立端到端 WebRTC...");
+      const result = await connection.connect({
+        authorization: `Bearer ${session.key}`,
+        voice,
+        signalingUrl,
+      });
+      if (realtimeRef.current !== connection) return;
       setConnected(true);
       setConnecting(false);
-      setStatus("已连接 — 正在建立语音通道");
-      addLog("info", "WebSocket 已连接");
-      ws.send(JSON.stringify({ type: "session.update", session: { voice } }));
-      addLog("send", `session.update (voice=${voice})`);
-    };
-    ws.onmessage = handleMessage;
-    ws.onclose = (e) => {
+      setMicActive(true);
+      setStatus("会话已建立 — 可以说话");
+      addLog("recv", `session.created (${result.location})`);
+      const microphone = connection.getMicrophoneStream();
+      if (microphone) startWaveform(microphone);
+    } catch (error) {
+      if (realtimeRef.current !== connection) return;
+      connection.close();
+      realtimeRef.current = null;
       setConnected(false);
       setConnecting(false);
-      if (!terminalErrorRef.current) setStatus(`已断开 (code=${e.code})`);
-      addLog("info", `连接关闭: code=${e.code}`);
-      stopMic();
-    };
-    ws.onerror = () => {
-      addLog("error", "WebSocket 错误");
-    };
-  }, [voice, addLog, handleMessage, stopMic]);
+      setMicActive(false);
+      const message = error instanceof Error ? error.message : String(error);
+      terminalErrorRef.current = message;
+      setStatus(`错误：${message}`);
+      addLog("error", message);
+    }
+  }, [voice, addLog, handleRealtimeEvent, startWaveform, stopWaveform]);
 
-  const disconnect = useCallback(() => {
-    wsRef.current?.close();
-    stopMic();
-  }, [stopMic]);
+  useEffect(() => {
+    connectRef.current = connect;
+    return () => {
+      if (quotaRetryTimerRef.current !== null) {
+        window.clearTimeout(quotaRetryTimerRef.current);
+        quotaRetryTimerRef.current = null;
+      }
+      realtimeRef.current?.close();
+      stopWaveform();
+    };
+  }, [connect, stopWaveform]);
 
   return (
     <div className="flex h-[calc(100vh-160px)] min-h-[500px] gap-4">
@@ -433,7 +395,7 @@ export function RealtimePanel() {
             </Select>
             <div className="flex-1" />
             {!connected ? (
-              <Button onClick={connect} disabled={connecting} className="gap-2 rounded-full bg-green-600 px-6 text-white hover:bg-green-700">
+              <Button onClick={() => void connect()} disabled={connecting} className="gap-2 rounded-full bg-green-600 px-6 text-white hover:bg-green-700">
                 <Phone className="size-4" />
                 {connecting ? "连接中..." : "开始对话"}
               </Button>

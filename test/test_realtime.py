@@ -43,6 +43,14 @@ def test_audio_track_clear_discards_queued_and_partial_audio():
     asyncio.run(run())
 
 
+def test_audio_track_bounds_latency_by_dropping_oldest_frames():
+    track = BufferedAudioStreamTrack(queue_max=3)
+    track.push_pcm16(b"\x01\x00" * (FRAME_BYTES // 2 * 5))
+
+    assert track.buffered_frames == 3
+    assert track.dropped_frames == 2
+
+
 def test_decode_data_channel_message_unwraps_chatgpt_envelope():
     inner = {
         "type": "state_update",
@@ -104,6 +112,20 @@ def test_realtime_session_rotates_account_after_quota_error():
         assert session._access_token == "healthy-token"
 
     asyncio.run(run())
+
+
+def test_data_channel_queue_is_bounded():
+    session = RealtimeSession(
+        identity={},
+        model="test",
+        websocket=object(),
+        access_token="token",
+    )
+    for index in range(600):
+        session._queue_dc_message(str(index))
+
+    assert session._dc_messages.qsize() == 512
+    assert session._dc_dropped_messages == 88
 
 
 def test_remote_stereo_audio_is_downmixed_to_exact_mono_pcm_size():

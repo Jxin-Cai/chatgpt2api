@@ -28,6 +28,15 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
         self._pts = 0
         self._remainder = b""
         self._next_frame_at: float | None = None
+        self._dropped_frames = 0
+
+    @property
+    def buffered_frames(self) -> int:
+        return self._queue.qsize()
+
+    @property
+    def dropped_frames(self) -> int:
+        return self._dropped_frames
 
     def push_pcm16(self, data: bytes) -> None:
         """推入任意长度的 PCM16 mono 48kHz 数据，内部按 960 samples 切帧。"""
@@ -38,6 +47,7 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
             if self._queue.full():
                 try:
                     self._queue.get_nowait()
+                    self._dropped_frames += 1
                 except asyncio.QueueEmpty:
                     pass
             try:
