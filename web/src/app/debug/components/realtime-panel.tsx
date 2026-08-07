@@ -47,7 +47,7 @@ function float32ToPcm16(float32: Float32Array): Int16Array {
   return pcm16;
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
+function arrayBufferToBase64(buffer: ArrayBufferLike): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";
   for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
@@ -79,6 +79,7 @@ export function RealtimePanel() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animFrameRef = useRef<number>(0);
   const playbackTimeRef = useRef<number>(0);
+  const terminalErrorRef = useRef<string>("");
   const logIdRef = useRef(0);
   const transcriptIdRef = useRef(0);
   const logsEndRef = useRef<HTMLDivElement | null>(null);
@@ -143,6 +144,16 @@ export function RealtimePanel() {
           addLog("recv", `session.created (${data.session?.id || ""})`);
         } else if (type === "session.updated") {
           addLog("recv", `session.updated: voice=${data.session?.voice}`);
+        } else if (type === "state_update") {
+          const stateLabels: Record<string, string> = {
+            listening: "上游正在聆听",
+            thinking: "上游正在思考",
+            speaking: "上游正在回答",
+            idle: "会话已建立 — 可以说话",
+          };
+          const upstreamState = data.new_state || "unknown";
+          setStatus(stateLabels[upstreamState] || `上游状态：${upstreamState}`);
+          addLog("recv", `state_update: ${data.previous_state || "?"} → ${upstreamState}`);
         } else if (type === "response.audio_transcript.delta") {
           addTranscript("assistant", data.delta || "");
         } else if (type === "response.text.delta") {
@@ -152,6 +163,9 @@ export function RealtimePanel() {
         } else if (type === "conversation.item.input_audio_transcription.completed") {
           addTranscript("user", data.transcript || "");
         } else if (type === "error") {
+          const message = data.error?.message || "未知错误";
+          terminalErrorRef.current = message;
+          setStatus(`错误：${message}`);
           addLog("error", `ERROR: ${JSON.stringify(data.error)}`);
         } else {
           addLog("recv", `${type}: ${JSON.stringify(data).substring(0, 150)}`);
@@ -168,6 +182,39 @@ export function RealtimePanel() {
   );
 
   const canUseMic = typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+
+  const drawWaveform = useCallback(() => {
+    const canvas = canvasRef.current;
+    const analyser = analyserRef.current;
+    if (!canvas || !analyser) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
+    const draw = () => {
+      animFrameRef.current = requestAnimationFrame(draw);
+      analyser.getByteTimeDomainData(data);
+      ctx.fillStyle = "rgba(0,0,0,0.05)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#22c55e";
+      ctx.beginPath();
+      const sliceWidth = canvas.width / data.length;
+      let x = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = data[i] / 128.0;
+        const y = (v * canvas.height) / 2;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+        x += sliceWidth;
+      }
+      ctx.lineTo(canvas.width, canvas.height / 2);
+      ctx.stroke();
+    };
+    canvas.width = canvas.offsetWidth * 2;
+    canvas.height = canvas.offsetHeight * 2;
+    draw();
+  }, []);
 
   const startMic = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -205,7 +252,7 @@ export function RealtimePanel() {
     } catch (err) {
       addLog("error", `麦克风错误: ${(err as Error).message}`);
     }
-  }, [addLog]);
+  }, [addLog, drawWaveform]);
 
   const stopMic = useCallback(() => {
     if (scriptNodeRef.current) {
@@ -221,38 +268,6 @@ export function RealtimePanel() {
       animFrameRef.current = 0;
     }
     setMicActive(false);
-  }, []);
-
-  const drawWaveform = useCallback(() => {
-    const canvas = canvasRef.current;
-    const analyser = analyserRef.current;
-    if (!canvas || !analyser) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const data = new Uint8Array(analyser.frequencyBinCount);
-
-    const draw = () => {
-      animFrameRef.current = requestAnimationFrame(draw);
-      analyser.getByteTimeDomainData(data);
-      ctx.fillStyle = "rgba(0,0,0,0.05)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "#22c55e";
-      ctx.beginPath();
-      const sliceWidth = canvas.width / data.length;
-      let x = 0;
-      for (let i = 0; i < data.length; i++) {
-        const v = data[i] / 128.0;
-        const y = (v * canvas.height) / 2;
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-        x += sliceWidth;
-      }
-      ctx.lineTo(canvas.width, canvas.height / 2);
-      ctx.stroke();
-    };
-    canvas.width = canvas.offsetWidth * 2;
-    canvas.height = canvas.offsetHeight * 2;
-    draw();
   }, []);
 
   const sendTextMessage = useCallback((text: string) => {
@@ -280,6 +295,7 @@ export function RealtimePanel() {
     }
     setConnecting(true);
     setStatus("连接中...");
+    terminalErrorRef.current = "";
 
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = webConfig.apiUrl ? new URL(webConfig.apiUrl).host : window.location.host;
@@ -306,14 +322,14 @@ export function RealtimePanel() {
     ws.onclose = (e) => {
       setConnected(false);
       setConnecting(false);
-      setStatus(`已断开 (code=${e.code})`);
+      if (!terminalErrorRef.current) setStatus(`已断开 (code=${e.code})`);
       addLog("info", `连接关闭: code=${e.code}`);
       stopMic();
     };
     ws.onerror = () => {
       addLog("error", "WebSocket 错误");
     };
-  }, [voice, addLog, handleMessage, startMic, stopMic]);
+  }, [voice, addLog, handleMessage, startMic, stopMic, canUseMic]);
 
   const disconnect = useCallback(() => {
     wsRef.current?.close();

@@ -56,6 +56,7 @@ def create_router() -> APIRouter:
             model=model,
             websocket=websocket,
             access_token=access_token,
+            access_token_provider=account_service.get_realtime_access_token,
         )
         try:
             await session.run()

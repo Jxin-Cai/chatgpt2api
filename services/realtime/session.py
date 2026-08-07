@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import WebSocket
@@ -11,6 +12,44 @@ from fastapi import WebSocket
 from services.realtime.audio_track import BufferedAudioStreamTrack, SAMPLE_RATE, FRAME_BYTES
 from services.realtime.chatgpt_webrtc import create_peer_connection
 from utils.log import logger
+
+
+class RealtimeQuotaExceeded(RuntimeError):
+    """上游账号的实时语音额度已耗尽。"""
+
+
+def decode_data_channel_message(message: str) -> dict[str, Any]:
+    """解开 ChatGPT WebRTC 的 data_message 双层 JSON 封装。"""
+    outer = json.loads(message)
+    if outer.get("type") != "data_message":
+        return outer
+    inner = outer.get("data")
+    if isinstance(inner, str):
+        decoded = json.loads(inner)
+        if isinstance(decoded, dict):
+            return decoded
+    if isinstance(inner, dict):
+        return inner
+    return outer
+
+
+def quota_error_from_message(message: dict[str, Any]) -> str | None:
+    payload = message.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if message.get("type") == "goodbye" and payload.get("reason") == "cap_reached":
+        return str(payload.get("detail") or "realtime voice quota exhausted")
+
+    if message.get("type") == "usage_update":
+        rate_limit = payload.get("rate_limit_message")
+        if isinstance(rate_limit, dict):
+            exceeded = rate_limit.get("exceed_limit_message")
+            if isinstance(exceeded, dict):
+                title = str(exceeded.get("title") or "Daily Limit Reached")
+                detail = str(exceeded.get("description_markdown") or "audio usage exceeded")
+                return f"{title}: {detail}"
+    return None
 
 
 class RealtimeSession:
@@ -21,17 +60,26 @@ class RealtimeSession:
     - 桥接客户端 WebSocket ↔ WebRTC 音频/事件
     """
 
-    def __init__(self, identity: dict, model: str, websocket: WebSocket, access_token: str):
+    def __init__(
+        self,
+        identity: dict,
+        model: str,
+        websocket: WebSocket,
+        access_token: str,
+        access_token_provider: Callable[[set[str]], str] | None = None,
+    ):
         self._identity = identity
         self._model = model
         self._ws = websocket
         self._access_token = access_token
+        self._access_token_provider = access_token_provider
         self._pc = None
         self._input_track: BufferedAudioStreamTrack | None = None
         self._data_channel = None
         self._voice = "ember"
         self._closed = False
         self._tasks: list[asyncio.Task] = []
+        self._dc_messages: asyncio.Queue[str] = asyncio.Queue()
         self._start_time = time.time()
 
     async def run(self) -> None:
@@ -51,6 +99,10 @@ class RealtimeSession:
             for task in done:
                 if task.exception() and not self._closed:
                     logger.warning(f"[realtime] Task {task.get_name()} error: {task.exception()}")
+        except RealtimeQuotaExceeded as e:
+            if not self._closed:
+                await self._send_error(str(e), code="realtime_quota_exhausted")
+                logger.warning(f"[realtime] Voice quota exhausted: {e}")
         except Exception as e:
             if not self._closed:
                 await self._send_error(str(e))
@@ -59,12 +111,43 @@ class RealtimeSession:
             await self.close()
 
     async def _start(self) -> None:
-        """建立 WebRTC 连接。"""
+        """建立 WebRTC 连接；额度耗尽时自动轮换到下一个账号。"""
+        excluded: set[str] = set()
+        access_token = self._access_token
+
+        while True:
+            try:
+                await self._start_once(access_token)
+                self._access_token = access_token
+                return
+            except RealtimeQuotaExceeded as exc:
+                excluded.add(access_token)
+                logger.warning("[realtime] Upstream account voice quota exhausted; trying next account")
+                if self._pc:
+                    await self._pc.close()
+                self._pc = None
+                self._input_track = None
+                self._data_channel = None
+                self._dc_messages = asyncio.Queue()
+                if not self._access_token_provider:
+                    raise
+                try:
+                    access_token = self._access_token_provider(excluded)
+                except RuntimeError as provider_error:
+                    raise RealtimeQuotaExceeded(str(provider_error)) from exc
+
+    async def _start_once(self, access_token: str) -> None:
+        """使用一个账号建立并探测 WebRTC 连接。"""
         self._pc, self._input_track, self._data_channel, remote_audio, self._location = await create_peer_connection(
-            access_token=self._access_token,
+            access_token=access_token,
             voice=self._voice,
         )
         self._remote_audio_track = remote_audio
+
+        @self._data_channel.on("message")
+        def on_dc_message(message):
+            if isinstance(message, str):
+                self._dc_messages.put_nowait(message)
 
         self._connection_ready = asyncio.Event()
 
@@ -115,8 +198,37 @@ class RealtimeSession:
             })
             self._data_channel.send(track_state_msg)
             logger.info("[realtime] Sent track_state to activate VAD")
+            await self._check_initial_upstream_status()
         else:
             logger.warning(f"[realtime] DataChannel not open: {self._data_channel.readyState if self._data_channel else 'None'}")
+
+    async def _check_initial_upstream_status(self) -> None:
+        """捕获连接后立即下发的额度错误，同时保留普通消息供客户端读取。"""
+        buffered: list[str] = []
+        deadline = asyncio.get_running_loop().time() + 2.5
+        try:
+            while True:
+                timeout = deadline - asyncio.get_running_loop().time()
+                if timeout <= 0:
+                    break
+                try:
+                    raw = await asyncio.wait_for(self._dc_messages.get(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    break
+                buffered.append(raw)
+                try:
+                    decoded = decode_data_channel_message(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                quota_error = quota_error_from_message(decoded)
+                if quota_error:
+                    raise RealtimeQuotaExceeded(quota_error)
+                # 正常账号通常会立即给出不含限额警告的 usage_update。
+                if decoded.get("type") == "usage_update":
+                    break
+        finally:
+            for raw in buffered:
+                self._dc_messages.put_nowait(raw)
 
     async def _client_reader(self) -> None:
         """从客户端 WebSocket 读取事件并处理。"""
@@ -153,7 +265,8 @@ class RealtimeSession:
             pass  # VAD 由 ChatGPT 服务端处理
 
         elif event_type == "input_audio_buffer.clear":
-            pass
+            if self._input_track:
+                self._input_track.clear()
 
         elif event_type == "session.update":
             session = event.get("session", {})
@@ -222,33 +335,26 @@ class RealtimeSession:
 
     async def _dc_reader(self) -> None:
         """读取 DataChannel 消息并转发给客户端。"""
-        dc = self._data_channel
-        if not dc:
+        if not self._data_channel:
             return
-
-        message_queue: asyncio.Queue[str] = asyncio.Queue()
-
-        @dc.on("message")
-        def on_msg(msg):
-            if isinstance(msg, str):
-                try:
-                    message_queue.put_nowait(msg)
-                except asyncio.QueueFull:
-                    pass
 
         while not self._closed:
             try:
-                msg = await asyncio.wait_for(message_queue.get(), timeout=2)
+                msg = await asyncio.wait_for(self._dc_messages.get(), timeout=2)
             except asyncio.TimeoutError:
                 continue
             except Exception:
                 break
 
             try:
-                data = json.loads(msg)
+                data = decode_data_channel_message(msg)
                 event_type = data.get("type", "datachannel.message")
-                await self._send_event(event_type, data)
-            except json.JSONDecodeError:
+                payload = data.get("payload")
+                if isinstance(payload, dict):
+                    await self._send_event(event_type, payload)
+                else:
+                    await self._send_event(event_type, data)
+            except (json.JSONDecodeError, TypeError):
                 await self._send_event("datachannel.message", {"raw": msg[:1000]})
 
     async def _send_event(self, event_type: str, data: dict) -> None:
@@ -260,8 +366,11 @@ class RealtimeSession:
         except Exception:
             pass
 
-    async def _send_error(self, message: str) -> None:
-        await self._send_event("error", {"error": {"message": message}})
+    async def _send_error(self, message: str, code: str | None = None) -> None:
+        error = {"message": message}
+        if code:
+            error["code"] = code
+        await self._send_event("error", {"error": error})
 
     async def close(self) -> None:
         if self._closed:

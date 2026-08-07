@@ -1091,9 +1091,10 @@ class AccountService:
             self._index += 1
         return self.refresh_access_token(access_token, event="get_text_access_token") or access_token
 
-    def get_realtime_access_token(self) -> str:
+    def get_realtime_access_token(self, excluded: set[str] | None = None) -> str:
         """获取一个支持语音的 Plus/Team/Pro 账号 token。"""
         voice_plan_types = {"plus", "team", "pro"}
+        excluded = excluded or set()
         with self._lock:
             candidates = [
                 token
@@ -1101,8 +1102,11 @@ class AccountService:
                 if account.get("status") not in {"禁用", "异常"}
                 and self._normalize_account_type(account.get("type")).lower() in voice_plan_types
                 and (token := account.get("access_token") or "")
+                and token not in excluded
             ]
             if not candidates:
+                if excluded:
+                    raise RuntimeError("all available realtime accounts have exhausted their voice quota")
                 raise RuntimeError("no available realtime-capable account (plus/team/pro required)")
             token = candidates[self._index % len(candidates)]
             self._index += 1
