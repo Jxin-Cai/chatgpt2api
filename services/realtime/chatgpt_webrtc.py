@@ -67,7 +67,7 @@ async def create_peer_connection(
     input_track = BufferedAudioStreamTrack()
     pc.addTrack(input_track)
     pc.addTransceiver("video", direction="sendonly")
-    dc = pc.createDataChannel("oai-events")
+    dc = pc.createDataChannel("", negotiated=True, id=0)
 
     # 预注册 track 事件 — 必须在 setRemoteDescription 之前
     remote_audio_track_holder = []

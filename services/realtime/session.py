@@ -93,6 +93,31 @@ class RealtimeSession:
 
         logger.info("[realtime] WebRTC connected")
 
+        # 等待 DataChannel 打开后发送 track_state 激活 ChatGPT VAD
+        for _ in range(50):
+            if self._data_channel and self._data_channel.readyState == "open":
+                break
+            await asyncio.sleep(0.1)
+
+        if self._data_channel and self._data_channel.readyState == "open":
+            track_state_msg = json.dumps({
+                "type": "data_message",
+                "data": json.dumps({
+                    "type": "track_state",
+                    "payload": {
+                        "type": "track_state",
+                        "track_id": "microphone",
+                        "media_type": "audio",
+                        "media_source": "microphone",
+                        "state": "live",
+                    }
+                })
+            })
+            self._data_channel.send(track_state_msg)
+            logger.info("[realtime] Sent track_state to activate VAD")
+        else:
+            logger.warning(f"[realtime] DataChannel not open: {self._data_channel.readyState if self._data_channel else 'None'}")
+
     async def _client_reader(self) -> None:
         """从客户端 WebSocket 读取事件并处理。"""
         while not self._closed:
@@ -145,7 +170,8 @@ class RealtimeSession:
 
     def _send_to_dc(self, event: dict) -> None:
         if self._data_channel and self._data_channel.readyState == "open":
-            self._data_channel.send(json.dumps(event))
+            msg = json.dumps({"type": "data_message", "data": json.dumps(event)})
+            self._data_channel.send(msg)
 
     async def _audio_sender(self) -> None:
         """从 ChatGPT 的远端音频轨道读取帧，编码为 base64 发送给客户端。"""
