@@ -21,8 +21,7 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=queue_max)
         self._pts = 0
         self._remainder = b""
-        self._recv_count = 0
-        self._real_data_count = 0
+        self._started = False
 
     def push_pcm16(self, data: bytes) -> None:
         """推入任意长度的 PCM16 mono 48kHz 数据，内部按 960 samples 切帧。"""
@@ -41,21 +40,21 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
                 pass
             offset += FRAME_BYTES
         self._remainder = buf[offset:]
+        self._started = True
 
     async def recv(self) -> AudioFrame:
-        try:
-            pcm = await asyncio.wait_for(self._queue.get(), timeout=0.02)
-            self._real_data_count += 1
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        if self._started:
+            # 有数据流入后，阻塞等待真实数据（不插入静音）
+            # 这确保发送给 ChatGPT 的全部是真实音频
+            try:
+                pcm = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # 超过 1 秒没数据（用户可能暂停），发静音保持 RTP 连接
+                pcm = b"\x00" * FRAME_BYTES
+        else:
+            # 尚未收到任何数据，发静音帧
+            await asyncio.sleep(0.02)
             pcm = b"\x00" * FRAME_BYTES
-
-        self._recv_count += 1
-        if self._recv_count <= 5 or self._recv_count % 500 == 0:
-            import logging
-            logging.getLogger("uvicorn").info(
-                f"[audio_track] recv #{self._recv_count}: real_data={self._real_data_count}, "
-                f"queue={self._queue.qsize()}, ratio={self._real_data_count/max(1,self._recv_count)*100:.1f}%"
-            )
 
         frame = AudioFrame(format="s16", layout="mono", samples=SAMPLES_PER_FRAME)
         frame.sample_rate = SAMPLE_RATE
