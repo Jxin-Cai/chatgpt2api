@@ -8,7 +8,7 @@ from av import AudioFrame
 
 SAMPLE_RATE = 48000
 SAMPLES_PER_FRAME = 960  # 20ms at 48kHz
-FRAME_BYTES = SAMPLES_PER_FRAME * 2  # s16 mono
+FRAME_BYTES = SAMPLES_PER_FRAME * 2  # s16 mono = 1920 bytes
 
 
 class BufferedAudioStreamTrack(MediaStreamTrack):
@@ -20,14 +20,14 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
         super().__init__()
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=queue_max)
         self._pts = 0
+        self._remainder = b""
 
     def push_pcm16(self, data: bytes) -> None:
-        """推入 PCM16 mono 48kHz 数据（每次 960 samples = 1920 bytes）。
-        如果队列满则丢弃最旧帧（防止积压）。
-        """
+        """推入任意长度的 PCM16 mono 48kHz 数据，内部按 960 samples 切帧。"""
+        buf = self._remainder + data
         offset = 0
-        while offset + FRAME_BYTES <= len(data):
-            chunk = data[offset:offset + FRAME_BYTES]
+        while offset + FRAME_BYTES <= len(buf):
+            chunk = buf[offset:offset + FRAME_BYTES]
             if self._queue.full():
                 try:
                     self._queue.get_nowait()
@@ -38,6 +38,7 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
             except asyncio.QueueFull:
                 pass
             offset += FRAME_BYTES
+        self._remainder = buf[offset:]
 
     async def recv(self) -> AudioFrame:
         try:
