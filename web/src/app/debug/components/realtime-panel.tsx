@@ -454,6 +454,8 @@ export function RealtimePanel() {
   const sendTextMessage = useCallback(async (text: string) => {
     const normalized = text.trim();
     if (!realtimeRef.current || !normalized) return;
+    const attemptId = attemptIdRef.current;
+    const conversationId = conversationIdRef.current;
 
     applyTranscriptUpdate({
       role: "user",
@@ -467,11 +469,83 @@ export function RealtimePanel() {
     addLog("send", `text: ${normalized.substring(0, 60)}`);
     setTextInput("");
 
-    realtimeRef.current.sendEvent({
-      type: "conversation.item.create",
-      item: { type: "message", role: "user", content: [{ type: "input_text", text: normalized }] },
-    });
-    realtimeRef.current.sendEvent({ type: "response.create" });
+    if (!conversationId || !attemptId) {
+      addLog("warn", "无 conversation_id，文本无法发送");
+      setPhase(micActiveRef.current ? "listening" : "muted");
+      setStatusDetail("语音会话尚未就绪，请稍后重试");
+      return;
+    }
+
+    const session = await getStoredAuthSession();
+    if (!session) return;
+    const signalingBase = webConfig.apiUrl
+      ? new URL("/v1/realtime/sessions", webConfig.apiUrl).toString()
+      : "/v1/realtime/sessions";
+    try {
+      const response = await fetch(`${signalingBase}/${encodeURIComponent(attemptId)}/text`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text: normalized,
+          conversation_id: conversationId,
+          parent_message_id: parentMessageIdRef.current || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        addLog("error", `text inject failed: HTTP ${response.status} ${errText.substring(0, 100)}`);
+        setPhase(micActiveRef.current ? "listening" : "muted");
+        setStatusDetail("文字发送失败，请重试");
+        return;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let assistantText = "";
+      const sourceId = startTurn("assistant");
+      setPhase("speaking");
+      setStatusDetail(PHASE_COPY.speaking.detail);
+
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6);
+          if (raw === "[DONE]") continue;
+          try {
+            const payload = JSON.parse(raw);
+            const message = payload?.message;
+            if (message?.author?.role === "assistant" && message?.content?.parts) {
+              const newText = message.content.parts.join("");
+              if (newText && newText !== assistantText) {
+                assistantText = newText;
+                applyTranscriptUpdate({ role: "assistant", text: assistantText, mode: "replace", final: false, sourceId });
+              }
+              if (message.id) parentMessageIdRef.current = message.id;
+            }
+            if (payload?.type === "error") {
+              addLog("error", `text response error: ${JSON.stringify(payload.error).substring(0, 120)}`);
+            }
+          } catch { /* skip non-json lines */ }
+        }
+      }
+      if (assistantText) {
+        applyTranscriptUpdate({ role: "assistant", text: assistantText, mode: "replace", final: true, sourceId });
+      }
+      setPhase(micActiveRef.current ? "listening" : "muted");
+      setStatusDetail(PHASE_COPY[micActiveRef.current ? "listening" : "muted"].detail);
+    } catch (err) {
+      addLog("error", `text inject error: ${err instanceof Error ? err.message : String(err)}`);
+      setPhase(micActiveRef.current ? "listening" : "muted");
+    }
   }, [addLog, applyTranscriptUpdate, startTurn]);
 
   const disconnect = useCallback(() => {
