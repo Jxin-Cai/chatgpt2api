@@ -995,6 +995,341 @@
   }
 }
 
+/* ARC Intelligence Console shell */
+.debug-arc-console {
+  --arc-console-cyan: 103 232 249;
+  --arc-console-ice: 226 242 254;
+  --arc-console-violet: 196 181 253;
+  position: relative;
+  isolation: isolate;
+  overflow-x: clip;
+}
+
+.debug-arc-console::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0.75rem 0.5rem 1.25rem;
+  border: 1px solid rgb(var(--arc-console-cyan) / 0.08);
+  border-radius: 28px;
+  background:
+    linear-gradient(135deg, rgb(4 10 22 / 0.95), rgb(5 10 23 / 0.72)),
+    url("/ai-chamber-bg.webp") center / cover;
+  box-shadow: 0 28px 100px rgb(3 8 20 / 0.22), inset 0 1px rgb(255 255 255 / 0.04);
+  content: "";
+  pointer-events: none;
+}
+
+.debug-arc-console__skip-link {
+  position: fixed;
+  z-index: 80;
+  top: 0.75rem;
+  left: 1rem;
+  transform: translateY(-180%);
+  border: 1px solid rgb(var(--arc-console-cyan) / 0.45);
+  border-radius: 10px;
+  background: rgb(4 12 25 / 0.96);
+  padding: 0.75rem 1rem;
+  color: rgb(207 250 254 / 0.95);
+  font-size: 0.75rem;
+  transition: transform 180ms ease;
+}
+
+.debug-arc-console__skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid rgb(var(--arc-console-cyan) / 0.85);
+  outline-offset: 3px;
+}
+
+.debug-arc-console__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  border: 1px solid rgb(255 255 255 / 0.09);
+  border-radius: 22px;
+  background: linear-gradient(115deg, rgb(6 14 29 / 0.86), rgb(6 12 27 / 0.58));
+  padding: 1.15rem 1.35rem;
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.05);
+  backdrop-filter: blur(16px);
+}
+
+.debug-arc-console__header-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.debug-arc-console__brand-mark {
+  display: grid;
+  min-height: 46px;
+  min-width: 46px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgb(var(--arc-console-cyan) / 0.3);
+  border-radius: 14px;
+  background: radial-gradient(circle at 35% 30%, rgb(224 242 254 / 0.22), rgb(var(--arc-console-cyan) / 0.08) 52%, transparent 76%);
+  color: rgb(165 243 252 / 0.9);
+  box-shadow: 0 0 24px rgb(var(--arc-console-cyan) / 0.1), inset 0 0 18px rgb(var(--arc-console-cyan) / 0.08);
+}
+
+.debug-arc-console__eyebrow,
+.debug-arc-console__mode-label,
+.debug-arc-console__nav-kicker {
+  color: rgb(186 230 253 / 0.56);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.debug-arc-console__title {
+  margin-top: 0.35rem;
+  color: rgb(241 245 249 / 0.94);
+  font-size: clamp(1rem, 1.8vw, 1.35rem);
+  font-weight: 520;
+  letter-spacing: -0.02em;
+}
+
+.debug-arc-console__subtitle,
+.debug-arc-console__mode-detail {
+  margin-top: 0.25rem;
+  color: rgb(226 242 254 / 0.4);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.debug-arc-console__mode {
+  display: grid;
+  min-width: 148px;
+  gap: 0.3rem;
+  border-left: 1px solid rgb(255 255 255 / 0.1);
+  padding-left: 1rem;
+}
+
+.debug-arc-console__mode-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: rgb(224 242 254 / 0.9);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.debug-arc-console__mode-value svg {
+  color: rgb(165 243 252 / 0.82);
+}
+
+.debug-arc-console__tabs {
+  margin-top: 0.9rem;
+  min-width: 0;
+}
+
+.debug-arc-console__nav-shell {
+  min-width: 0;
+  border-bottom: 1px solid rgb(255 255 255 / 0.1);
+  padding: 0.35rem 0.25rem 0.65rem;
+}
+
+.debug-arc-console__nav-kicker {
+  margin-bottom: 0.5rem;
+  padding-inline: 0.25rem;
+  color: rgb(255 255 255 / 0.3);
+}
+
+.debug-arc-console__tab-list {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.debug-arc-console__tab-group {
+  flex: 0 0 auto;
+  margin-inline: 0.45rem 0.1rem;
+  color: rgb(var(--arc-console-cyan) / 0.58);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.debug-arc-console__tab-group:not(:first-child) {
+  border-left: 1px solid rgb(255 255 255 / 0.12);
+  margin-left: 0.7rem;
+  padding-left: 0.8rem;
+}
+
+.debug-arc-console__tab {
+  min-height: 44px;
+  min-width: 104px;
+  flex: 0 0 auto;
+  cursor: pointer;
+  gap: 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  padding: 0.55rem 0.85rem;
+  color: rgb(226 242 254 / 0.48);
+  font-size: 12px;
+  transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
+}
+
+.debug-arc-console__tab:hover {
+  border-color: rgb(255 255 255 / 0.12);
+  background: rgb(255 255 255 / 0.045);
+  color: rgb(241 245 249 / 0.88);
+}
+
+.debug-arc-console__tab--primary {
+  border-color: rgb(var(--arc-console-cyan) / 0.14);
+  background: rgb(var(--arc-console-cyan) / 0.055);
+  color: rgb(207 250 254 / 0.72);
+}
+
+.debug-arc-console__tab--primary[data-state="active"] {
+  border-color: rgb(var(--arc-console-cyan) / 0.42);
+  background: linear-gradient(120deg, rgb(var(--arc-console-cyan) / 0.16), rgb(255 255 255 / 0.055));
+  color: rgb(236 254 255 / 0.98);
+  box-shadow: 0 0 18px rgb(var(--arc-console-cyan) / 0.1), inset 0 1px rgb(255 255 255 / 0.08);
+}
+
+.debug-arc-console__tab--utility[data-state="active"] {
+  border-color: rgb(var(--arc-console-violet) / 0.34);
+  background: rgb(var(--arc-console-violet) / 0.1);
+  color: rgb(237 233 254 / 0.94);
+  box-shadow: 0 0 16px rgb(var(--arc-console-violet) / 0.08);
+}
+
+.debug-arc-console__tab:focus-visible {
+  z-index: 1;
+  outline: 2px solid rgb(var(--arc-console-cyan) / 0.8);
+  outline-offset: 2px;
+}
+
+.debug-arc-console__content {
+  width: 100%;
+  min-width: 0;
+  padding-top: 0.85rem;
+}
+
+.debug-arc-console__content:focus-visible {
+  border-radius: 14px;
+  outline: 2px solid rgb(var(--arc-console-cyan) / 0.48);
+  outline-offset: 4px;
+}
+
+.debug-arc-console__content > [data-slot="tabs-content"] {
+  min-width: 0;
+}
+
+.debug-arc-console--loading {
+  background: linear-gradient(135deg, rgb(4 9 19 / 0.98), rgb(7 12 27 / 0.95));
+}
+
+.debug-arc-console__loading-card {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 0.7rem;
+  border: 1px solid rgb(var(--arc-console-cyan) / 0.18);
+  border-radius: 14px;
+  background: rgb(255 255 255 / 0.04);
+  padding: 0.75rem 1rem;
+  color: rgb(226 242 254 / 0.68);
+  font-size: 12px;
+}
+
+.debug-arc-console__loading-card svg {
+  color: rgb(165 243 252 / 0.82);
+}
+
+@media (max-width: 700px) {
+  .debug-arc-console {
+    padding-inline: 0.75rem;
+  }
+
+  .debug-arc-console::before {
+    inset-inline: 0.35rem;
+    border-radius: 20px;
+  }
+
+  .debug-arc-console__header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.9rem;
+    border-radius: 18px;
+    padding: 1rem;
+  }
+
+  .debug-arc-console__mode {
+    width: 100%;
+    min-width: 0;
+    border-top: 1px solid rgb(255 255 255 / 0.1);
+    border-left: 0;
+    padding-top: 0.75rem;
+    padding-left: 0;
+  }
+
+  .debug-arc-console__tab-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: visible;
+  }
+
+  .debug-arc-console__tab-group {
+    grid-column: 1 / -1;
+    margin: 0.2rem 0 0;
+  }
+
+  .debug-arc-console__tab-group:not(:first-child) {
+    border-top: 1px solid rgb(255 255 255 / 0.1);
+    border-left: 0;
+    margin: 0.45rem 0 0;
+    padding: 0.75rem 0 0;
+  }
+
+  .debug-arc-console__tab {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+  }
+
+  .debug-arc-console__content {
+    padding-top: 0.65rem;
+  }
+}
+
+@media (max-width: 400px) {
+  .debug-arc-console {
+    padding-inline: 0.5rem;
+  }
+
+  .debug-arc-console__subtitle {
+    max-width: 24ch;
+  }
+
+  .debug-arc-console__tab {
+    padding-inline: 0.65rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .debug-arc-console__skip-link,
+  .debug-arc-console__tab {
+    transition: none;
+  }
+
+  .debug-arc-console .animate-spin {
+    animation: none;
+  }
+}
+
 .chat-markdown {
   max-width: 70ch;
   min-width: 0;
