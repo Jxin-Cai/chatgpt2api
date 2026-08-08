@@ -613,9 +613,9 @@ export function RealtimePanel() {
     if (!retry) {
       quotaRetryCountRef.current = 0;
       attemptIdRef.current = "";
-      conversationIdRef.current = "";
-      parentMessageIdRef.current = "";
     }
+    conversationIdRef.current = "";
+    parentMessageIdRef.current = "";
 
     const signalingUrl = webConfig.apiUrl
       ? new URL("/v1/realtime/sessions", webConfig.apiUrl).toString()
