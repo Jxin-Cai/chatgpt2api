@@ -2575,6 +2575,8 @@ class OpenAIBackendAPI:
             images: Optional[list[str]] = None,
             system_hints: Optional[list[str]] = None,
             thinking_effort: str = "",
+            conversation_id: Optional[str] = None,
+            parent_message_id: Optional[str] = None,
     ) -> Iterator[str]:
         system_hints = system_hints or []
         if "picture_v2" in system_hints:
@@ -2586,6 +2588,10 @@ class OpenAIBackendAPI:
         requirements = self._get_chat_requirements()
         path, timezone = self._chat_target()
         payload = self._conversation_payload(normalized, model, timezone, thinking_effort=thinking_effort)
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+        if parent_message_id:
+            payload["parent_message_id"] = parent_message_id
         response = self.session.post(
             self.base_url + path,
             headers=self._conversation_headers(path, requirements),

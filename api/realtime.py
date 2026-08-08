@@ -314,6 +314,8 @@ def create_router() -> APIRouter:
                 for chunk in api.stream_conversation(
                     messages=[{"role": "user", "content": body.text}],
                     model="auto",
+                    conversation_id=body.conversation_id,
+                    parent_message_id=body.parent_message_id or None,
                 ):
                     yield f"data: {chunk}\n\n"
             except Exception as exc:
