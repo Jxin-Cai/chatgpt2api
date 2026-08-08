@@ -1,0 +1,7 @@
+[     321ms] [WARNING]   WARN  [Statsig] The user does not have the required id_type "userID" for Dynamic config "login_web_existing_user_login_option_google" @ https://auth-cdn.oaistatic.com/assets/statsig-CwrZvT-1.js:8
+[     322ms] [WARNING]   WARN  [Statsig] The user does not have the required id_type "userID" for Dynamic config "login_web_existing_user_login_option_microsoft" @ https://auth-cdn.oaistatic.com/assets/statsig-CwrZvT-1.js:8
+[     322ms] [WARNING]   WARN  [Statsig] The user does not have the required id_type "userID" for Dynamic config "login_web_existing_user_login_option_apple" @ https://auth-cdn.oaistatic.com/assets/statsig-CwrZvT-1.js:8
+[     322ms] [WARNING]   WARN  [Statsig] The user does not have the required id_type "userID" for Dynamic config "login_web_existing_user_login_option_email" @ https://auth-cdn.oaistatic.com/assets/statsig-CwrZvT-1.js:8
+[     322ms] [WARNING]   WARN  [Statsig] The user does not have the required id_type "userID" for Dynamic config "login_web_existing_user_login_option_phone_number" @ https://auth-cdn.oaistatic.com/assets/statsig-CwrZvT-1.js:8
+[     536ms] [WARNING] Datadog Browser SDK: Customer data exceeds the recommended 3KiB threshold. More details: https://docs.datadoghq.com/real_user_monitoring/browser/troubleshooting/#customer-data-exceeds-the-recommended-threshold-warning @ https://auth-cdn.oaistatic.com/assets/datadog-BTgRrIvw.js:6
+[    5991ms] [ERROR] Failed to load resource: the server responded with a status of 403 () @ https://auth.openai.com/api/accounts/password/verify:0

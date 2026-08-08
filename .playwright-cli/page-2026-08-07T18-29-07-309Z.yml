@@ -1,0 +1,22 @@
+- generic [active] [ref=e1]:
+  - region "Notifications alt+T"
+  - main [ref=e2]:
+    - generic [ref=e4]:
+      - generic [ref=e8]:
+        - button "切换主题" [ref=e9]:
+          - generic [ref=e12]: Toggle theme
+        - link "GitHub repository" [ref=e13] [cursor=pointer]:
+          - /url: https://github.com/basketikun/chatgpt2api
+          - generic [ref=e14]: GitHub
+        - button "v1.8.0" [ref=e15]
+      - generic [ref=e17]:
+        - generic [ref=e24]:
+          - heading "欢迎回来" [level=1] [ref=e25]
+          - paragraph [ref=e26]: 输入密钥后继续使用账号管理和图片生成功能。
+        - generic [ref=e27]:
+          - generic [ref=e28]: 密钥
+          - textbox "密钥" [ref=e29]:
+            - /placeholder: 请输入密钥
+            - text: sk-caijiaxin123
+        - button "登录" [ref=e30]
+  - alert [ref=e7]

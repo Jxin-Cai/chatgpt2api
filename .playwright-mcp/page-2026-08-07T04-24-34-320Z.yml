@@ -1,0 +1,34 @@
+- generic [ref=f21e1]:
+  - heading "GPT Realtime Voice Debug" [level=1] [ref=f21e2]
+  - generic [ref=f21e3]:
+    - generic [ref=f21e4]:
+      - generic [ref=f21e5]:
+        - text: API Key
+        - textbox "API Key" [ref=f21e6]:
+          - /placeholder: sk-...
+          - text: sk-t3GrIUx0nFeGtKus7opM_ZR-nI8jB0nd
+      - generic [ref=f21e7]:
+        - text: Model
+        - combobox "Model" [ref=f21e8]:
+          - option "gpt-4o-realtime-preview" [selected]
+          - option "gpt-realtime-2.1"
+      - generic [ref=f21e9]:
+        - text: Voice
+        - combobox "Voice" [ref=f21e10]:
+          - option "Ember" [selected]
+          - option "Sol (Glimmer)"
+          - option "Breeze"
+          - option "Cove"
+          - option "Juniper"
+          - option "Maple"
+          - option "Spruce (Orbit)"
+          - option "Vale"
+          - option "Arbor (Fathom)"
+      - button "断开" [active] [ref=f21e16] [cursor=pointer]
+      - generic [ref=f21e12]: 会话已建立 — 可以说话
+    - generic [ref=f21e15]:
+      - generic [ref=f21e17]: "[120] Connecting to ws://localhost:8000/v1/realtime?model=gpt-4o-realtime-preview"
+      - generic [ref=f21e18]: "[158] WebSocket connected"
+      - generic [ref=f21e19]: "[159] → session.update"
+      - generic [ref=f21e20]: "[258] ← session.created: {\"id\":\"/v1/wm/rtc_b851d50a8c584067a4f415db89d5a6af\",\"model\":\"gpt-4o-realtime-preview\",\"voice\":\"ember\"}"
+      - generic [ref=f21e21]: "[259] ← session.updated: {\"type\":\"session.updated\",\"session\":{\"voice\":\"ember\"}}"

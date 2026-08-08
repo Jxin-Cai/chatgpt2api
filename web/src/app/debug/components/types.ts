@@ -18,6 +18,21 @@ export type ChatCompletionResponse = {
   choices?: Array<{ message?: { role?: string; content?: string } }>;
 };
 
+export type ChatStreamingSummary = {
+  kind: "stream";
+  model: string;
+  status: "complete" | "interrupted" | "fault";
+  finish_reason: string | null;
+  char_count: number;
+  chunk_count: number;
+  first_token_ms: number | null;
+  elapsed_ms: number;
+  content: string;
+  error?: string;
+};
+
+export type ChatRawResponse = ChatCompletionResponse | ChatStreamingSummary;
+
 export type EditableFileTask = {
   id: string;
   taskId?: string;

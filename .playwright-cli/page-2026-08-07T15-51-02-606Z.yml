@@ -1,0 +1,139 @@
+- generic [active] [ref=e1]:
+  - region "Notifications alt+T"
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e48]:
+        - link "chatgpt2api" [ref=e50] [cursor=pointer]:
+          - /url: /image/
+        - navigation [ref=e51]:
+          - button "无限画布" [ref=e52]
+          - link "生图" [ref=e53] [cursor=pointer]:
+            - /url: /image/
+          - link "号池管理" [ref=e54] [cursor=pointer]:
+            - /url: /accounts/
+          - link "图片管理" [ref=e55] [cursor=pointer]:
+            - /url: /image-manager/
+          - link "日志管理" [ref=e56] [cursor=pointer]:
+            - /url: /logs/
+          - link "调试" [ref=e57] [cursor=pointer]:
+            - /url: /debug/
+          - link "设置" [ref=e58] [cursor=pointer]:
+            - /url: /settings/
+        - generic [ref=e59]:
+          - generic [ref=e60]:
+            - button "切换主题" [ref=e61]:
+              - generic [ref=e64]: Toggle theme
+            - link "GitHub repository" [ref=e65] [cursor=pointer]:
+              - /url: https://github.com/basketikun/chatgpt2api
+              - generic [ref=e66]: GitHub
+            - button "v1.8.0" [ref=e67]
+          - generic [ref=e68]: 管理员 · 管理员
+          - button "退出" [ref=e69]
+      - generic [ref=e70]:
+        - generic [ref=e71]:
+          - generic [ref=e72]: Account Pool
+          - heading "号池管理" [level=1] [ref=e73]
+        - generic [ref=e74]:
+          - button "刷新" [ref=e75]
+          - button "一键刷新所有账号信息和额度" [ref=e76]
+          - button "导入" [ref=e77]
+          - button "导出全部 Token" [ref=e78]
+      - generic [ref=e79]:
+        - generic [ref=e80]:
+          - generic [ref=e82]:
+            - generic [ref=e83]: 账户总数
+            - generic [ref=e88]: "1"
+          - generic [ref=e90]:
+            - generic [ref=e91]: 正常账户
+            - generic [ref=e96]: "1"
+          - generic [ref=e98]:
+            - generic [ref=e99]: 限流账户
+            - generic [ref=e103]: "0"
+          - generic [ref=e105]:
+            - generic [ref=e106]: 异常账户
+            - generic [ref=e112]: "0"
+          - generic [ref=e114]:
+            - generic [ref=e115]: 禁用账户
+            - generic [ref=e120]: "0"
+          - generic [ref=e122]:
+            - generic [ref=e123]: 剩余额度
+            - generic [ref=e130]: "117"
+        - generic [ref=e132]:
+          - generic [ref=e133]:
+            - text: 系统可用模型
+            - generic [ref=e134]: (0)
+          - generic [ref=e135]: 正在加载模型列表...
+      - generic [ref=e137]:
+        - generic [ref=e138]:
+          - generic [ref=e139]:
+            - heading "账户列表" [level=2] [ref=e140]
+            - generic [ref=e141]: "1"
+          - generic [ref=e142]:
+            - textbox "搜索邮箱" [ref=e144]
+            - combobox [ref=e145]:
+              - generic: 全部类型
+            - combobox [ref=e148]:
+              - generic: 全部状态
+            - combobox [ref=e151]
+        - generic [ref=e155]:
+          - generic [ref=e157]:
+            - button "刷新选中账号信息和额度" [disabled]
+            - button "尝试恢复异常账号" [disabled]
+            - button "移除异常账号" [disabled]
+            - button "删除所选" [disabled]
+            - button "批量设置优先级" [disabled]
+          - table [ref=e159]:
+            - rowgroup [ref=e160]:
+              - row [ref=e161]:
+                - columnheader [ref=e162]:
+                  - checkbox [ref=e163]
+                - columnheader "token" [ref=e164]
+                - columnheader "类型" [ref=e165]
+                - columnheader "来源" [ref=e166]
+                - columnheader "状态" [ref=e167]
+                - columnheader "账号信息" [ref=e168]
+                - columnheader "创建时间" [ref=e169]
+                - columnheader "额度" [ref=e170]
+                - columnheader "优先级" [ref=e171]
+                - columnheader "恢复时间" [ref=e172]
+                - columnheader "在途" [ref=e173]
+                - columnheader "成功" [ref=e174]
+                - columnheader "失败" [ref=e175]
+                - columnheader "操作" [ref=e176]
+            - rowgroup [ref=e177]:
+              - row [ref=e178]:
+                - cell [ref=e179]:
+                  - checkbox [ref=e180]
+                - cell "eyJhbGciOiJSUzI1...HLrymRog" [ref=e181]:
+                  - generic [ref=e182]:
+                    - generic [ref=e183]: eyJhbGciOiJSUzI1...HLrymRog
+                    - button [ref=e184]
+                - cell "plus" [ref=e188]
+                - cell "web" [ref=e190]
+                - cell "正常" [ref=e192]
+                - cell "dragoon.join3g@icloud.com" [ref=e197]
+                - cell "08/07 12:15" [ref=e199]
+                - cell "117" [ref=e200]
+                - cell "0" [ref=e202]
+                - cell "剩余 0d 17h 2026-08-08 16:46:18" [ref=e203]:
+                  - generic [ref=e204]:
+                    - generic [ref=e205]: 剩余 0d 17h
+                    - generic [ref=e206]: 2026-08-08 16:46:18
+                - cell "0" [ref=e207]
+                - cell "0" [ref=e208]
+                - cell "0" [ref=e209]
+                - cell [ref=e210]:
+                  - generic [ref=e211]:
+                    - button [ref=e212]
+                    - button [ref=e216]
+                    - button [ref=e222]
+          - generic [ref=e227]:
+            - generic [ref=e228]: 显示第 1 - 1 条，共 1 条
+            - generic [ref=e229]: 1 / 1 页
+            - combobox [ref=e230]:
+              - generic: 10 / 页
+            - button [disabled]
+            - button "1" [ref=e233]
+            - button [disabled]
+  - button "Open Next.js Dev Tools" [ref=e12] [cursor=pointer]
+  - alert [ref=e40]

@@ -1,0 +1,182 @@
+- generic [active] [ref=f24e1]:
+  - region "Notifications alt+T"
+  - main [ref=f24e2]:
+    - generic [ref=f24e3]:
+      - generic [ref=f24e33]:
+        - link "chatgpt2api" [ref=f24e35] [cursor=pointer]:
+          - /url: /image/
+        - navigation [ref=f24e36]:
+          - button "无限画布" [ref=f24e37]
+          - link "生图" [ref=f24e38] [cursor=pointer]:
+            - /url: /image/
+          - link "号池管理" [ref=f24e39] [cursor=pointer]:
+            - /url: /accounts/
+          - link "图片管理" [ref=f24e40] [cursor=pointer]:
+            - /url: /image-manager/
+          - link "日志管理" [ref=f24e41] [cursor=pointer]:
+            - /url: /logs/
+          - link "调试" [ref=f24e42] [cursor=pointer]:
+            - /url: /debug/
+          - link "设置" [ref=f24e43] [cursor=pointer]:
+            - /url: /settings/
+        - generic [ref=f24e44]:
+          - generic [ref=f24e45]:
+            - button "切换主题" [ref=f24e46]:
+              - generic [ref=f24e49]: Toggle theme
+            - link "GitHub repository" [ref=f24e50] [cursor=pointer]:
+              - /url: https://github.com/basketikun/chatgpt2api
+              - generic [ref=f24e51]: GitHub
+            - button "v1.8.0" [ref=f24e52]
+          - generic [ref=f24e53]: 管理员 · 管理员
+          - button "退出" [ref=f24e54]
+      - generic [ref=f24e55]:
+        - generic [ref=f24e56]:
+          - generic [ref=f24e57]: Account Pool
+          - heading "号池管理" [level=1] [ref=f24e58]
+        - generic [ref=f24e59]:
+          - button "刷新" [ref=f24e60]
+          - button "一键刷新所有账号信息和额度" [ref=f24e61]
+          - button "导入" [ref=f24e62]
+          - button "导出全部 Token" [ref=f24e63]
+      - generic [ref=f24e64]:
+        - generic [ref=f24e65]:
+          - generic [ref=f24e67]:
+            - generic [ref=f24e68]: 账户总数
+            - generic [ref=f24e73]: "2"
+          - generic [ref=f24e75]:
+            - generic [ref=f24e76]: 正常账户
+            - generic [ref=f24e81]: "2"
+          - generic [ref=f24e83]:
+            - generic [ref=f24e84]: 限流账户
+            - generic [ref=f24e88]: "0"
+          - generic [ref=f24e90]:
+            - generic [ref=f24e91]: 异常账户
+            - generic [ref=f24e97]: "0"
+          - generic [ref=f24e99]:
+            - generic [ref=f24e100]: 禁用账户
+            - generic [ref=f24e105]: "0"
+          - generic [ref=f24e107]:
+            - generic [ref=f24e108]: 剩余额度
+            - generic [ref=f24e115]: "216"
+        - generic [ref=f24e117]:
+          - generic [ref=f24e118]:
+            - text: 系统可用模型
+            - generic [ref=f24e119]: (18)
+          - generic [ref=f24e120]:
+            - button "auto" [ref=f24e121] [cursor=pointer]
+            - button "gpt-5-3" [ref=f24e123] [cursor=pointer]
+            - button "gpt-5-3-mini" [ref=f24e125] [cursor=pointer]
+            - button "gpt-5-4-t-mini" [ref=f24e127] [cursor=pointer]
+            - button "gpt-5-5" [ref=f24e129] [cursor=pointer]
+            - button "gpt-5-5-instant" [ref=f24e131] [cursor=pointer]
+            - button "gpt-5-5-mini" [ref=f24e133] [cursor=pointer]
+            - button "gpt-5-5-thinking" [ref=f24e135] [cursor=pointer]
+            - button "gpt-5-6-thinking" [ref=f24e137] [cursor=pointer]
+            - button "gpt-5.5-wm" [ref=f24e139] [cursor=pointer]
+            - button "gpt-5.6-luna-wm" [ref=f24e141] [cursor=pointer]
+            - button "gpt-5.6-sol-wm" [ref=f24e143] [cursor=pointer]
+            - button "gpt-5.6-terra-wm" [ref=f24e145] [cursor=pointer]
+            - button "o3" [ref=f24e147] [cursor=pointer]
+            - button "research" [ref=f24e149] [cursor=pointer]
+            - button "codex-gpt-image-2" [ref=f24e151] [cursor=pointer]
+            - button "gpt-image-2" [ref=f24e153] [cursor=pointer]
+            - button "plus-codex-gpt-image-2" [ref=f24e155] [cursor=pointer]
+      - generic [ref=f24e157]:
+        - generic [ref=f24e158]:
+          - generic [ref=f24e159]:
+            - heading "账户列表" [level=2] [ref=f24e160]
+            - generic [ref=f24e161]: "2"
+          - generic [ref=f24e162]:
+            - textbox "搜索邮箱" [ref=f24e164]
+            - combobox [ref=f24e165]:
+              - generic: 全部类型
+            - combobox [ref=f24e168]:
+              - generic: 全部状态
+            - combobox [ref=f24e171]
+        - generic [ref=f24e175]:
+          - generic [ref=f24e177]:
+            - button "刷新选中账号信息和额度" [disabled]
+            - button "尝试恢复异常账号" [disabled]
+            - button "移除异常账号" [disabled]
+            - button "删除所选" [disabled]
+            - button "批量设置优先级" [disabled]
+          - table [ref=f24e179]:
+            - rowgroup [ref=f24e180]:
+              - row [ref=f24e181]:
+                - columnheader [ref=f24e182]:
+                  - checkbox [ref=f24e183]
+                - columnheader "token" [ref=f24e184]
+                - columnheader "类型" [ref=f24e185]
+                - columnheader "来源" [ref=f24e186]
+                - columnheader "状态" [ref=f24e187]
+                - columnheader "账号信息" [ref=f24e188]
+                - columnheader "创建时间" [ref=f24e189]
+                - columnheader "额度" [ref=f24e190]
+                - columnheader "优先级" [ref=f24e191]
+                - columnheader "恢复时间" [ref=f24e192]
+                - columnheader "在途" [ref=f24e193]
+                - columnheader "成功" [ref=f24e194]
+                - columnheader "失败" [ref=f24e195]
+                - columnheader "操作" [ref=f24e196]
+            - rowgroup [ref=f24e197]:
+              - row [ref=f24e198]:
+                - cell [ref=f24e199]:
+                  - checkbox [ref=f24e200]
+                - cell "eyJhbGciOiJSUzI1...BMeZTHtQ" [ref=f24e201]:
+                  - generic [ref=f24e202]:
+                    - generic [ref=f24e203]: eyJhbGciOiJSUzI1...BMeZTHtQ
+                    - button [ref=f24e204]
+                - cell "plus" [ref=f24e208]
+                - cell "codex" [ref=f24e210]
+                - cell "正常" [ref=f24e212]
+                - cell "dragoon.join3g@icloud.com" [ref=f24e217]
+                - cell "08/03 10:28" [ref=f24e219]
+                - cell "107" [ref=f24e220]
+                - cell "0" [ref=f24e222]
+                - cell "剩余 0d 2h 2026-08-07 14:56:17" [ref=f24e223]:
+                  - generic [ref=f24e224]:
+                    - generic [ref=f24e225]: 剩余 0d 2h
+                    - generic [ref=f24e226]: 2026-08-07 14:56:17
+                - cell "0" [ref=f24e227]
+                - cell "110" [ref=f24e228]
+                - cell "1" [ref=f24e229]
+                - cell [ref=f24e230]:
+                  - generic [ref=f24e231]:
+                    - button [ref=f24e232]
+                    - button [ref=f24e236]
+                    - button [ref=f24e242]
+              - row [ref=f24e246]:
+                - cell [ref=f24e247]:
+                  - checkbox [ref=f24e248]
+                - cell "eyJhbGciOiJSUzI1...wqAonPgg" [ref=f24e249]:
+                  - generic [ref=f24e250]:
+                    - generic [ref=f24e251]: eyJhbGciOiJSUzI1...wqAonPgg
+                    - button [ref=f24e252]
+                - cell "plus" [ref=f24e256]
+                - cell "codex" [ref=f24e258]
+                - cell "正常" [ref=f24e260]
+                - cell "46-hoaxer.rulings+hi5xag12tp@icloud.com" [ref=f24e265]
+                - cell "08/03 17:29" [ref=f24e267]
+                - cell "109" [ref=f24e268]
+                - cell "0" [ref=f24e270]
+                - cell "剩余 0d 4h 2026-08-07 16:10:04" [ref=f24e271]:
+                  - generic [ref=f24e272]:
+                    - generic [ref=f24e273]: 剩余 0d 4h
+                    - generic [ref=f24e274]: 2026-08-07 16:10:04
+                - cell "0" [ref=f24e275]
+                - cell "68" [ref=f24e276]
+                - cell "0" [ref=f24e277]
+                - cell [ref=f24e278]:
+                  - generic [ref=f24e279]:
+                    - button [ref=f24e280]
+                    - button [ref=f24e284]
+                    - button [ref=f24e290]
+          - generic [ref=f24e295]:
+            - generic [ref=f24e296]: 显示第 1 - 2 条，共 2 条
+            - generic [ref=f24e297]: 1 / 1 页
+            - combobox [ref=f24e298]:
+              - generic: 10 / 页
+            - button [disabled]
+            - button "1" [ref=f24e301]
+            - button [disabled]
+  - alert [ref=f24e7]

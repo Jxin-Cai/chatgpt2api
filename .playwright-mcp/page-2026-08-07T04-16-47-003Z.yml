@@ -1,0 +1,34 @@
+- generic [ref=f18e1]:
+  - heading "GPT Realtime Voice Debug" [level=1] [ref=f18e2]
+  - generic [ref=f18e3]:
+    - generic [ref=f18e4]:
+      - generic [ref=f18e5]:
+        - text: API Key
+        - textbox "API Key" [ref=f18e6]:
+          - /placeholder: sk-...
+          - text: sk-t3GrIUx0nFeGtKus7opM_ZR-nI8jB0nd
+      - generic [ref=f18e7]:
+        - text: Model
+        - combobox "Model" [ref=f18e8]:
+          - option "gpt-4o-realtime-preview" [selected]
+          - option "gpt-realtime-2.1"
+      - generic [ref=f18e9]:
+        - text: Voice
+        - combobox "Voice" [ref=f18e10]:
+          - option "Ember" [selected]
+          - option "Sol (Glimmer)"
+          - option "Breeze"
+          - option "Cove"
+          - option "Juniper"
+          - option "Maple"
+          - option "Spruce (Orbit)"
+          - option "Vale"
+          - option "Arbor (Fathom)"
+      - button "连接" [active] [ref=f18e11] [cursor=pointer]
+      - generic [ref=f18e12]: 已断开 (code=1006)
+    - generic [ref=f18e15]:
+      - generic [ref=f18e16]: "[984] Connecting to ws://localhost:8000/v1/realtime?model=gpt-4o-realtime-preview"
+      - generic [ref=f18e17]: "[998] WebSocket error"
+      - generic [ref=f18e18]: "[998] WebSocket closed: code=1006 reason="
+      - generic [ref=f18e19]: "[012] WebSocket error"
+      - generic [ref=f18e20]: "[012] WebSocket closed: code=1006 reason="

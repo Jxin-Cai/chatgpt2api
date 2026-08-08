@@ -1,0 +1,26 @@
+- generic [active] [ref=e1]:
+  - region "Notifications alt+T":
+    - list:
+      - listitem [ref=e41]:
+        - generic [ref=e45]: 密钥无效或已失效，请重新登录
+  - main [ref=e2]:
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - button "切换主题" [ref=e18]:
+          - generic [ref=e21]: Toggle theme
+        - link "GitHub repository" [ref=e22] [cursor=pointer]:
+          - /url: https://github.com/basketikun/chatgpt2api
+          - generic [ref=e23]: GitHub
+        - button "v1.8.0" [ref=e24]
+      - generic [ref=e26]:
+        - generic [ref=e33]:
+          - heading "欢迎回来" [level=1] [ref=e34]
+          - paragraph [ref=e35]: 输入密钥后继续使用账号管理和图片生成功能。
+        - generic [ref=e36]:
+          - generic [ref=e37]: 密钥
+          - textbox "密钥" [ref=e38]:
+            - /placeholder: 请输入密钥
+            - text: c
+        - button "登录" [ref=e39]
+  - button "Open Next.js Dev Tools" [ref=e12] [cursor=pointer]
+  - alert [ref=e40]

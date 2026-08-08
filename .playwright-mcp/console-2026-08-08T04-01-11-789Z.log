@@ -1,0 +1,14 @@
+[     301ms] [WARNING] Datadog Browser SDK: Customer data exceeds the recommended 3KiB threshold. More details: https://docs.datadoghq.com/real_user_monitoring/browser/troubleshooting/#customer-data-exceeds-the-recommended-threshold-warning @ https://auth-cdn.oaistatic.com/assets/datadog-BTgRrIvw.js:6
+[   17023ms] [ERROR] Qt: [@formatjs/intl Error MISSING_TRANSLATION] Missing message: "dynamicUsernameInput.email" for locale "zh-CN", using default message (Email address) as fallback.
+
+    at new Qt (https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:20:79)
+    at nn (https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:24:287)
+    at Vn (https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:24:5318)
+    at Mt (https://chatgpt.com/cdn/assets/35711af7-oi9yrrozfcoz951a.js:2:2705)
+    at Jo (https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:36:48769)
+    at Vc (https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:36:71461)
+    at ol (https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:36:82112)
+    at Gd (https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:36:126901)
+    at Wd (https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:36:126874)
+    at Ud (https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:36:126733) @ https://chatgpt.com/cdn/assets/2340486e-eagvzznw7lk1t4r3.js:27
+[   55093ms] [WARNING] Datadog Browser SDK: Customer data exceeds the recommended 3KiB threshold. More details: https://docs.datadoghq.com/real_user_monitoring/browser/troubleshooting/#customer-data-exceeds-the-recommended-threshold-warning @ https://auth-cdn.oaistatic.com/assets/datadog-BTgRrIvw.js:6

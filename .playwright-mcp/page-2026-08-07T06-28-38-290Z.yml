@@ -1,0 +1,54 @@
+- generic [active] [ref=f26e1]:
+  - region "Notifications alt+T"
+  - main [ref=f26e2]:
+    - generic [ref=f26e3]:
+      - generic [ref=f26e9]:
+        - link "chatgpt2api" [ref=f26e11] [cursor=pointer]:
+          - /url: /image/
+        - navigation [ref=f26e12]:
+          - button "无限画布" [ref=f26e13]
+          - link "生图" [ref=f26e14] [cursor=pointer]:
+            - /url: /image/
+          - link "号池管理" [ref=f26e15] [cursor=pointer]:
+            - /url: /accounts/
+          - link "图片管理" [ref=f26e16] [cursor=pointer]:
+            - /url: /image-manager/
+          - link "日志管理" [ref=f26e17] [cursor=pointer]:
+            - /url: /logs/
+          - link "调试" [ref=f26e18] [cursor=pointer]:
+            - /url: /debug/
+          - link "设置" [ref=f26e20] [cursor=pointer]:
+            - /url: /settings/
+        - generic [ref=f26e21]:
+          - generic [ref=f26e22]:
+            - button "切换主题" [ref=f26e23]:
+              - generic [ref=f26e26]: Toggle theme
+            - link "GitHub repository" [ref=f26e27] [cursor=pointer]:
+              - /url: https://github.com/basketikun/chatgpt2api
+              - generic [ref=f26e28]: GitHub
+            - button "v1.8.0" [ref=f26e29]
+          - generic [ref=f26e30]: 管理员 · 管理员
+          - button "退出" [ref=f26e31]
+      - generic [ref=f26e32]:
+        - tablist [ref=f26e33]:
+          - tab "实时语音" [selected] [ref=f26e34]
+          - tab "搜索Skills" [ref=f26e35]
+          - tab "搜索" [ref=f26e36]
+          - tab "PPT生成" [ref=f26e37]
+          - tab "PSD生成" [ref=f26e38]
+          - tab "对话" [ref=f26e39]
+        - tabpanel "实时语音" [ref=f26e40]:
+          - generic [ref=f26e41]:
+            - generic [ref=f26e42]:
+              - generic [ref=f26e43]: 连接中...
+              - generic [ref=f26e47]: 点击下方按钮开始语音对话
+              - generic [ref=f26e50]:
+                - combobox [ref=f26e51]:
+                  - generic: Ember (自信乐观)
+                - button "连接中..." [disabled]
+            - generic [ref=f26e54]:
+              - generic [ref=f26e55]: 事件日志
+              - generic [ref=f26e58]:
+                - generic [ref=f26e59]: "[77]"
+                - text: 正在连接...
+  - alert [ref=f26e7]

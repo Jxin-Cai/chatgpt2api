@@ -1,0 +1,32 @@
+- generic [active] [ref=f4e2]:
+  - generic [ref=f4e3]:
+    - generic [ref=f4e4]:
+      - generic [ref=f4e5]:
+        - textbox "Search flags" [ref=f4e6]: unsafely-treat-insecure-origin-as-secure
+        - button "清除搜索字词" [ref=f4e6791] [cursor=pointer]
+      - button "全部重置" [ref=f4e8] [cursor=pointer]
+    - status [ref=f4e6793]: 1 个与“unsafely-treat-insecure-origin-as-secure”相符的搜索结果
+  - generic [ref=f4e11]:
+    - generic [ref=f4e12]:
+      - heading "Experiments" [level=1] [ref=f4e14]
+      - generic [ref=f4e15]: 150.0.7871.187
+    - tablist [ref=f4e22] [cursor=pointer]:
+      - tab "可用" [selected] [ref=f4e23]
+      - tab "不受支持的实验" [ref=f4e26]
+    - tabpanel [ref=f4e30]:
+      - generic [ref=f4e2293]:
+        - generic [ref=f4e2294]:
+          - heading "Insecure origins treated as secure" [level=2] [ref=f4e6794]
+          - paragraph [ref=f4e6795]: Treat given (insecure) origins as secure origins. Multiple origins can be supplied as a comma-separated list. Origins must have their protocol specified e.g. "http://example.com". For the definition of secure contexts, see https://w3c.github.io/webappsec-secure-contexts/ – Mac, Windows, Linux, ChromeOS, Android
+          - textbox "Insecure origins treated as secure" [ref=f4e2300]
+          - link [ref=f4e6796] [cursor=pointer]:
+            - /url: "#unsafely-treat-insecure-origin-as-secure"
+            - text: "#"
+            - mark [ref=f4e6797]: unsafely-treat-insecure-origin-as-secure
+        - combobox "Insecure origins treated as secure" [ref=f4e2303]:
+          - option "已停用" [selected]
+          - option "已启用"
+    - generic [ref=f4e6788]:
+      - generic [ref=f4e6789]: 您所做的更改会在下次重新启动 Chrome 时生效。
+      - generic [ref=f4e6790]:
+        - button "重新启动" [disabled]

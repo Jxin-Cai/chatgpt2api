@@ -1,0 +1,65 @@
+- generic [ref=e1]:
+  - region "Notifications alt+T"
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e33]:
+        - link "chatgpt2api" [ref=e35] [cursor=pointer]:
+          - /url: /image/
+        - navigation [ref=e36]:
+          - button "无限画布" [ref=e37]
+          - link "生图" [ref=e38] [cursor=pointer]:
+            - /url: /image/
+          - link "号池管理" [ref=e39] [cursor=pointer]:
+            - /url: /accounts/
+          - link "图片管理" [ref=e40] [cursor=pointer]:
+            - /url: /image-manager/
+          - link "日志管理" [ref=e41] [cursor=pointer]:
+            - /url: /logs/
+          - link "调试" [active] [ref=e42] [cursor=pointer]:
+            - /url: /debug/
+          - link "设置" [ref=e43] [cursor=pointer]:
+            - /url: /settings/
+        - generic [ref=e44]:
+          - generic [ref=e45]:
+            - button "切换主题" [ref=e46]:
+              - generic [ref=e49]: Toggle theme
+            - link "GitHub repository" [ref=e50] [cursor=pointer]:
+              - /url: https://github.com/basketikun/chatgpt2api
+              - generic [ref=e51]: GitHub
+            - button "v1.8.0" [ref=e52]
+          - generic [ref=e53]: 管理员 · 管理员
+          - button "退出" [ref=e54]
+      - generic [ref=e350]:
+        - tablist [ref=e351]:
+          - tab "实时语音" [selected] [ref=e352]
+          - tab "搜索Skills" [ref=e353]
+          - tab "搜索" [ref=e354]
+          - tab "PPT生成" [ref=e355]
+          - tab "PSD生成" [ref=e356]
+          - tab "对话" [ref=e357]
+        - tabpanel "实时语音" [ref=e358]:
+          - generic [ref=e359]:
+            - generic [ref=e360]:
+              - generic [ref=e363]:
+                - paragraph [ref=e364]: Realtime voice lab
+                - paragraph [ref=e365]: 准备好开始了吗？
+              - combobox "选择声音" [ref=e367]:
+                - generic: Ember · 自信乐观
+            - generic [ref=e370]:
+              - generic [ref=e371]:
+                - button "开始实时对话" [disabled] [ref=e372]
+                - paragraph [ref=e380]: 浏览器需要 HTTPS 或 localhost 才能访问麦克风。你仍可在右侧使用文字测试。
+              - complementary [ref=e381]:
+                - generic [ref=e383]:
+                  - paragraph [ref=e384]: Live transcript
+                  - heading "实时对话" [level=3] [ref=e385]
+                - generic [ref=e387]:
+                  - paragraph [ref=e394]: 对话文字会实时出现在这里
+                  - paragraph [ref=e395]: 你和 AI 的语音都会转写
+                - generic [ref=e396]:
+                  - generic [ref=e397]:
+                    - textbox "开始对话后可输入文字" [disabled] [ref=e398]
+                    - button "发送文字" [disabled] [ref=e399]
+                  - group [ref=e403]:
+                    - generic "协议事件 · 0" [ref=e404] [cursor=pointer]
+  - alert [ref=e7]

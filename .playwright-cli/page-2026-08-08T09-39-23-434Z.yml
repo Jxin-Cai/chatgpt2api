@@ -1,0 +1,68 @@
+- generic [active] [ref=e1]:
+  - region "Notifications alt+T"
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e33]:
+        - link "chatgpt2api" [ref=e35] [cursor=pointer]:
+          - /url: /image/
+        - navigation [ref=e36]:
+          - button "无限画布" [ref=e37]
+          - link "生图" [ref=e38] [cursor=pointer]:
+            - /url: /image/
+          - link "号池管理" [ref=e39] [cursor=pointer]:
+            - /url: /accounts/
+          - link "图片管理" [ref=e40] [cursor=pointer]:
+            - /url: /image-manager/
+          - link "日志管理" [ref=e41] [cursor=pointer]:
+            - /url: /logs/
+          - link "调试" [ref=e42] [cursor=pointer]:
+            - /url: /debug/
+          - link "设置" [ref=e43] [cursor=pointer]:
+            - /url: /settings/
+        - generic [ref=e44]:
+          - generic [ref=e45]:
+            - button "切换主题" [ref=e46]:
+              - generic [ref=e49]: Toggle theme
+            - link "GitHub repository" [ref=e50] [cursor=pointer]:
+              - /url: https://github.com/basketikun/chatgpt2api
+              - generic [ref=e51]: GitHub
+            - button "v1.8.0" [ref=e52]
+          - generic [ref=e53]: 管理员 · 管理员
+          - button "退出" [ref=e54]
+      - generic [ref=e368]:
+        - tablist [ref=e369]:
+          - tab "实时语音" [selected] [ref=e370]
+          - tab "搜索Skills" [ref=e371]
+          - tab "搜索" [ref=e372]
+          - tab "PPT生成" [ref=e373]
+          - tab "PSD生成" [ref=e374]
+          - tab "对话" [ref=e375]
+        - tabpanel "实时语音" [ref=e376]:
+          - generic [ref=e377]:
+            - generic [ref=e378]:
+              - generic [ref=e381]:
+                - paragraph [ref=e382]: Realtime voice lab
+                - paragraph [ref=e383]: 正在建立声场
+              - combobox "选择声音" [disabled] [ref=e385]:
+                - generic: Ember · 自信乐观
+            - generic [ref=e388]:
+              - generic [ref=e389]:
+                - generic [ref=e424]:
+                  - generic "正在建立声场" [ref=e425]
+                  - heading "正在建立声场" [level=2] [ref=e430]
+                  - paragraph [ref=e431]: 连接麦克风与实时模型…
+                - generic [ref=e432]: 正在连接
+              - complementary [ref=e398]:
+                - generic [ref=e400]:
+                  - paragraph [ref=e401]: Live transcript
+                  - heading "实时对话" [level=3] [ref=e402]
+                - generic [ref=e404]:
+                  - paragraph [ref=e411]: 对话文字会实时出现在这里
+                  - paragraph [ref=e412]: 你和 AI 的语音都会转写
+                - generic [ref=e413]:
+                  - generic [ref=e414]:
+                    - textbox "开始对话后可输入文字" [disabled] [ref=e415]
+                    - button "发送文字" [disabled] [ref=e416]
+                  - group [ref=e420]:
+                    - generic "协议事件 · 1" [ref=e436] [cursor=pointer]
+  - alert [ref=e7]

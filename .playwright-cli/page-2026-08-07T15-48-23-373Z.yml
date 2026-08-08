@@ -1,0 +1,10 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]: Velpos
+    - generic [ref=e7]: Agent Control Interface
+  - generic [ref=e9]:
+    - banner [ref=e10]:
+      - generic [ref=e11]: Velpos
+    - generic [ref=e20]:
+      - complementary [ref=e21]
+      - main [ref=e43]

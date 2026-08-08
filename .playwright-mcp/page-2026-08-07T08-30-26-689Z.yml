@@ -1,0 +1,188 @@
+- generic:
+  - link [ref=f6e253] [cursor=pointer]:
+    - /url: "#main"
+    - text: 跳至内容
+  - generic:
+    - generic:
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - navigation:
+                - generic:
+                  - generic:
+                    - generic:
+                      - button
+                - generic:
+                  - generic:
+                    - link:
+                      - /url: /
+                      - generic: 新聊天
+                  - generic:
+                    - button:
+                      - generic: 搜索聊天
+                  - generic:
+                    - button:
+                      - generic: 最近聊天
+                - generic:
+                  - generic:
+                    - button
+              - generic:
+                - heading [level=2]: 历史聊天记录
+                - generic:
+                  - navigation:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - link:
+                            - /url: /
+                            - generic: ChatGPT Plus
+                          - generic:
+                            - button
+                            - button [expanded]
+                    - generic:
+                      - list:
+                        - listitem:
+                          - link:
+                            - /url: /
+                            - generic: 新聊天
+                            - generic:
+                              - generic:
+                                - generic: ⇧
+                                - generic: ⌘
+                                - generic: O
+                    - link:
+                      - /url: /library
+                      - generic: 文件库
+                    - link:
+                      - /url: /projects
+                      - generic: 项目
+                      - button [ref=f6e254] [cursor=pointer]
+                    - link:
+                      - /url: /scheduled
+                      - generic: 已安排
+                    - link:
+                      - /url: /plugins
+                      - generic: 插件
+                    - generic: 更多
+                    - generic:
+                      - generic:
+                        - button [expanded]:
+                          - heading [level=2]: 最近
+                        - generic:
+                          - button [ref=f6e255] [cursor=pointer]
+                          - link [ref=f6e256] [cursor=pointer]:
+                            - /url: /
+                      - generic:
+                        - list:
+                          - listitem:
+                            - link:
+                              - /url: /c/6a758d95-4f4c-83ea-a060-8e7199033e7d
+                              - generic: User response inquiry
+                              - generic:
+                                - generic:
+                                  - button [ref=f6e257] [cursor=pointer]
+                                  - button [ref=f6e261] [cursor=pointer]
+                          - listitem:
+                            - link:
+                              - /url: /c/6a757bcf-1034-83ea-9137-cac5c2c33e35
+                              - generic: Thinking response
+                              - generic:
+                                - generic:
+                                  - button [ref=f6e265] [cursor=pointer]
+                                  - button [ref=f6e269] [cursor=pointer]
+                          - listitem:
+                            - link:
+                              - /url: /c/6a755de9-d5b0-83ea-ae82-5bc5b2578fed
+                              - generic: Greeting message
+                              - generic:
+                                - generic:
+                                  - button [ref=f6e273] [cursor=pointer]
+                                  - button [ref=f6e277] [cursor=pointer]
+                          - listitem:
+                            - link:
+                              - /url: /c/6a74b0ca-4174-83ea-8643-f4910441a371
+                              - generic: 聊天内容摘要
+                              - generic:
+                                - generic:
+                                  - button [ref=f6e281] [cursor=pointer]
+                                  - button [ref=f6e282] [cursor=pointer]
+                          - listitem:
+                            - link:
+                              - /url: /c/6a74a695-43b0-83ea-9710-c09b368f0480
+                              - generic: 错误的登录逻辑
+                              - generic:
+                                - generic:
+                                  - button [ref=f6e286] [cursor=pointer]
+                                  - button [ref=f6e287] [cursor=pointer]
+                          - listitem:
+                            - link:
+                              - /url: /c/6a705d23-a0c8-83ea-86f5-280bf90cea55
+                              - generic: Logo设计要求
+                              - generic:
+                                - generic:
+                                  - button [ref=f6e291] [cursor=pointer]
+                                  - button [ref=f6e292] [cursor=pointer]
+                  - generic:
+                    - generic:
+                      - button:
+                        - generic:
+                          - generic:
+                            - generic: asdfasd
+                            - generic: Plus
+                        - button [ref=f6e296] [cursor=pointer]
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - banner:
+                    - radiogroup "选择聊天界面" [ref=f6e298] [cursor=pointer]:
+                      - generic [ref=f6e300]:
+                        - radio "聊天" [checked] [ref=f6e302]
+                        - radio "工作" [ref=f6e304]
+                    - button "临时聊天" [ref=f6e309] [cursor=pointer]
+                - generic:
+                  - main:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic:
+                            - generic:
+                              - generic:
+                                - generic:
+                                  - generic:
+                                    - generic:
+                                      - heading "今天有什么计划？" [level=1]
+                        - generic [ref=f6e221]:
+                          - generic [ref=f6e224]:
+                            - button [ref=f6e315] [cursor=pointer]
+                            - textbox [ref=f6e316]:
+                              - paragraph [ref=f6e231]: 问问 ChatGPT
+                            - generic [ref=f6e232]:
+                              - button [ref=f6e320] [cursor=pointer]:
+                                - generic [ref=f6e321]: 极速
+                              - generic [ref=f6e242]:
+                                - button [ref=f6e326] [cursor=pointer]
+                                - button [ref=f6e327] [cursor=pointer]
+                          - status [ref=f6e330]: 3 条建议可用。第一条建议：帮我整理待办
+                          - list [ref=f6e333]:
+                            - listitem [ref=f6e334]:
+                              - button "帮我整理待办" [ref=f6e335] [cursor=pointer]
+                              - button "关闭建议"
+                            - listitem [ref=f6e339]:
+                              - button "起草跟进邮件" [ref=f6e340] [cursor=pointer]
+                              - button "关闭建议"
+                            - listitem [ref=f6e344]:
+                              - button "协助我准备接下来的会议" [ref=f6e345] [cursor=pointer]
+                              - button "关闭建议"
+                          - button [ref=f6e249]
+                          - button [ref=f6e250]
+  - alert
+  - status
+  - dialog [ref=f6e351]:
+    - banner [ref=f6e352]:
+      - heading "Daily Limit Reached" [level=2] [ref=f6e355]
+      - button "关闭" [active] [ref=f6e356] [cursor=pointer]
+    - generic [ref=f6e358]:
+      - paragraph [ref=f6e360]: You've reached your daily limit with voice for today. Your limit resets tomorrow at 2:29 PM.
+      - button "Got it" [ref=f6e362] [cursor=pointer]

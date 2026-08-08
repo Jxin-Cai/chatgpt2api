@@ -1,0 +1,53 @@
+[   83417ms] [ERROR] Qt: [@formatjs/intl Error MISSING_TRANSLATION] Missing message: "micMessages.hint" for locale "zh-CN", using default message (Enable microphone access in Settings) as fallback.
+
+    at new Qt (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:20:79)
+    at nn (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:24:287)
+    at Vn (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:24:5318)
+    at Axn (https://chatgpt.com/cdn/assets/8b34dbc2-m85ucq45nitacrlg.js:61:153696)
+    at Jo (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:48769)
+    at Vc (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:71461)
+    at ol (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:82112)
+    at Gd (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:126901)
+    at Hd (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:125964)
+    at Vd (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:125800) @ https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:27
+[   93059ms] [ERROR] Qt: [@formatjs/intl Error MISSING_TRANSLATION] Missing message: "micMessages.hint" for locale "zh-CN", using default message (Enable microphone access in Settings) as fallback.
+
+    at new Qt (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:20:79)
+    at nn (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:24:287)
+    at Vn (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:24:5318)
+    at Axn (https://chatgpt.com/cdn/assets/8b34dbc2-m85ucq45nitacrlg.js:61:153696)
+    at Jo (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:48769)
+    at Vc (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:71461)
+    at ol (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:82112)
+    at Gd (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:126901)
+    at Hd (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:125964)
+    at Vd (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:125800) @ https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:27
+[   93092ms] [LOG] [DC] createDataChannel: label=, opts={"negotiated":true,"id":0} @ :11
+[   95271ms] [LOG] [DC OPEN] , id=0, ordered=true, protocol= @ :37
+[   95271ms] [LOG] [DC SEND] : {"type":"data_message","data":"{\"type\":\"track_state\",\"payload\":{\"type\":\"track_state\",\"track_id\":\"microphone\",\"media_type\":\"audio\",\"media_source\":\"microphone\",\"state\":\"live\"}}"} @ :21
+[   95272ms] [LOG] [DC RECV] : {"type":"data_message","data":"{\"type\":\"state_update\",\"payload\":{\"type\":\"state_update\",\"previous_state\":\"idle\",\"new_state\":\"listening\",\"delay_s\":null}}"} @ :32
+[   95275ms] [LOG] [DC RECV] : {"type":"data_message","data":"{\"type\":\"usage_update\",\"payload\":{\"type\":\"usage_update\",\"audio_s\":0.0,\"video_s\":null,\"session_s\":7200.0,\"rate_limit_message\":{\"exceed_limit_message\":{\"title\":\"Daily Limit Reached\",\"description_markdown\":\"You've reached your daily limit with v @ :32
+[   95277ms] [LOG] [DC RECV] : {"type":"data_message","data":"{\"type\":\"startup_telemetry\",\"payload\":{\"type\":\"startup_telemetry\",\"metrics\":[{\"name\":\"conversation loaded\",\"ms\":430.3927100263536},{\"name\":\"init_response_received\",\"ms\":821.878},{\"name\":\"prefill_start\",\"ms\":898.498},{\"name\":\"prefill_com @ :32
+[   96935ms] [LOG] [DC RECV] : {"type":"data_message","data":"{\"type\":\"usage_update\",\"payload\":{\"type\":\"usage_update\",\"audio_s\":0.0,\"video_s\":null,\"session_s\":7200.0,\"rate_limit_message\":{\"exceed_limit_message\":{\"title\":\"Daily Limit Reached\",\"description_markdown\":\"You've reached your daily limit with v @ :32
+[   96936ms] [LOG] [DC RECV] : {"type":"data_message","data":"{\"type\":\"goodbye\",\"payload\":{\"type\":\"goodbye\",\"reason\":\"cap_reached\",\"detail\":\"audio usage exceeded\"}}"} @ :32
+[   96978ms] [LOG] [DC CLOSE]  @ :42
+[  119968ms] [ERROR] Qt: [@formatjs/intl Error MISSING_TRANSLATION] Missing message: "micMessages.hint" for locale "zh-CN", using default message (Enable microphone access in Settings) as fallback.
+
+    at new Qt (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:20:79)
+    at nn (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:24:287)
+    at Vn (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:24:5318)
+    at Axn (https://chatgpt.com/cdn/assets/8b34dbc2-m85ucq45nitacrlg.js:61:153696)
+    at Jo (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:48769)
+    at Vc (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:71461)
+    at ol (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:82112)
+    at Gd (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:126901)
+    at Hd (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:125964)
+    at Vd (https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:36:125800) @ https://chatgpt.com/cdn/assets/2340486e-deknw1e54mtoyn5h.js:27
+[  120005ms] [LOG] [DC] createDataChannel: label=, opts={"negotiated":true,"id":0} @ :11
+[  121528ms] [LOG] [DC OPEN] , id=0, ordered=true, protocol= @ :37
+[  121528ms] [LOG] [DC SEND] : {"type":"data_message","data":"{\"type\":\"track_state\",\"payload\":{\"type\":\"track_state\",\"track_id\":\"microphone\",\"media_type\":\"audio\",\"media_source\":\"microphone\",\"state\":\"live\"}}"} @ :21
+[  121529ms] [LOG] [DC RECV] : {"type":"data_message","data":"{\"type\":\"state_update\",\"payload\":{\"type\":\"state_update\",\"previous_state\":\"idle\",\"new_state\":\"listening\",\"delay_s\":null}}"} @ :32
+[  121534ms] [LOG] [DC RECV] : {"type":"data_message","data":"{\"type\":\"usage_update\",\"payload\":{\"type\":\"usage_update\",\"audio_s\":0.0,\"video_s\":null,\"session_s\":7200.0,\"rate_limit_message\":{\"exceed_limit_message\":{\"title\":\"Daily Limit Reached\",\"description_markdown\":\"You've reached your daily limit with v @ :32
+[  123444ms] [LOG] [DC RECV] : {"type":"data_message","data":"{\"type\":\"usage_update\",\"payload\":{\"type\":\"usage_update\",\"audio_s\":0.0,\"video_s\":null,\"session_s\":7200.0,\"rate_limit_message\":{\"exceed_limit_message\":{\"title\":\"Daily Limit Reached\",\"description_markdown\":\"You've reached your daily limit with v @ :32
+[  123447ms] [LOG] [DC RECV] : {"type":"data_message","data":"{\"type\":\"goodbye\",\"payload\":{\"type\":\"goodbye\",\"reason\":\"cap_reached\",\"detail\":\"audio usage exceeded\"}}"} @ :32
+[  123505ms] [LOG] [DC CLOSE]  @ :42

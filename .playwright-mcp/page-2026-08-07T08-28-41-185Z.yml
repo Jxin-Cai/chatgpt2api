@@ -1,0 +1,108 @@
+- generic [ref=f6e1]:
+  - link "跳至内容" [ref=f6e2] [cursor=pointer]:
+    - /url: "#main"
+  - generic [ref=f6e6]:
+    - generic [ref=f6e8]:
+      - navigation "侧边栏":
+        - generic:
+          - generic:
+            - generic:
+              - button "打开边栏"
+        - generic:
+          - generic:
+            - link "新聊天":
+              - /url: /
+          - generic:
+            - button "搜索聊天"
+          - generic:
+            - button "最近聊天"
+        - generic:
+          - generic:
+            - button "打开“个人资料”菜单"
+      - generic [ref=f6e9]:
+        - heading "历史聊天记录" [level=2] [ref=f6e10]
+        - generic [ref=f6e11]:
+          - navigation "历史聊天记录" [ref=f6e12]:
+            - generic [ref=f6e15]:
+              - link "主页" [ref=f6e16] [cursor=pointer]:
+                - /url: /
+                - generic [ref=f6e17]: ChatGPT
+              - generic [ref=f6e18]:
+                - button "搜索聊天" [ref=f6e19] [cursor=pointer]
+                - button "关闭边栏" [expanded] [ref=f6e22]
+            - list [ref=f6e26]:
+              - listitem [ref=f6e27]:
+                - link "新聊天 Shift 命令 O" [ref=f6e28] [cursor=pointer]:
+                  - /url: /
+                  - generic [ref=f6e29]: 新聊天
+                  - generic [ref=f6e37]:
+                    - generic "Shift" [ref=f6e38]: ⇧
+                    - generic "命令" [ref=f6e40]: ⌘
+                    - generic [ref=f6e42]: O
+              - listitem
+            - link "文件库" [ref=f6e44] [cursor=pointer]:
+              - /url: /library
+            - link "项目 新项目" [ref=f6e51] [cursor=pointer]:
+              - /url: /projects
+              - generic [ref=f6e52]: 项目
+              - button "新项目" [ref=f6e60]
+            - link "已安排" [ref=f6e64] [cursor=pointer]:
+              - /url: /scheduled
+            - link "插件" [ref=f6e71] [cursor=pointer]:
+              - /url: /plugins
+            - generic [ref=f6e78]: 更多
+            - generic [ref=f6e86]:
+              - generic [ref=f6e87]:
+                - button [expanded] [ref=f6e88] [cursor=pointer]:
+                  - heading "最近" [level=2] [ref=f6e89]
+                - generic [ref=f6e90]:
+                  - button "整理聊天" [ref=f6e91] [cursor=pointer]
+                  - link "新聊天" [ref=f6e95] [cursor=pointer]:
+                    - /url: /
+              - list [ref=f6e100]:
+                - listitem [ref=f6e101]:
+                  - link "M&M Candy Image Edit" [ref=f6e102] [cursor=pointer]:
+                    - /url: /c/6a753cd2-31bc-83ea-a5b7-33e437b78753
+                    - button "置顶 M&M Candy Image Edit" [ref=f6e111]
+                - listitem [ref=f6e115]:
+                  - link "聊天内容摘要" [ref=f6e116] [cursor=pointer]:
+                    - /url: /c/6a74b0ca-4174-83ea-8643-f4910441a371
+                    - button "置顶 聊天内容摘要" [ref=f6e125]
+                - listitem [ref=f6e129]:
+                  - link "错误的登录逻辑" [ref=f6e130] [cursor=pointer]:
+                    - /url: /c/6a74a695-43b0-83ea-9710-c09b368f0480
+                    - button "置顶 错误的登录逻辑" [ref=f6e139]
+                - listitem [ref=f6e143]:
+                  - link "Logo设计要求" [ref=f6e144] [cursor=pointer]:
+                    - /url: /c/6a705d23-a0c8-83ea-86f5-280bf90cea55
+                    - button "置顶 Logo设计要求" [ref=f6e153]
+          - button "asdfasd Plus，打开“个人资料”菜单" [ref=f6e160] [cursor=pointer]:
+            - generic [ref=f6e164]:
+              - generic [ref=f6e165]: asdfasd
+              - generic [ref=f6e167]: Plus
+            - button "下载应用" [ref=f6e172]
+    - generic [ref=f6e178]:
+      - generic [ref=f6e179]:
+        - banner:
+          - radiogroup "选择聊天界面" [ref=f6e182] [cursor=pointer]:
+            - generic [ref=f6e184]:
+              - radio "聊天" [checked] [ref=f6e186]
+              - radio "工作" [ref=f6e188]
+          - button "临时聊天" [ref=f6e195] [cursor=pointer]
+      - main [ref=f6e202]:
+        - generic [ref=f6e204]:
+          - heading "今天有什么计划？" [level=1] [ref=f6e212]
+          - generic [ref=f6e221]:
+            - generic [ref=f6e224]:
+              - button "添加文件等" [ref=f6e227] [cursor=pointer]
+              - textbox "与 ChatGPT 聊天" [active] [ref=f6e230]:
+                - paragraph [ref=f6e231]: 问问 ChatGPT
+              - generic [ref=f6e232]:
+                - button "极速" [ref=f6e236] [cursor=pointer]
+                - generic [ref=f6e242]:
+                  - button "开始听写" [ref=f6e243] [cursor=pointer]
+                  - button "启动语音功能" [ref=f6e246] [cursor=pointer]
+            - button [ref=f6e249]
+            - button [ref=f6e250]
+  - alert [ref=f6e251]
+  - status [ref=f6e252]

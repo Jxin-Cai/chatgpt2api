@@ -1,0 +1,100 @@
+- generic [ref=f18e1]:
+  - region "Notifications alt+T"
+  - main [ref=f18e2]:
+    - generic [ref=f18e3]:
+      - generic [ref=f18e9]:
+        - link "chatgpt2api" [ref=f18e11] [cursor=pointer]:
+          - /url: /image/
+        - navigation [ref=f18e12]:
+          - button "无限画布" [ref=f18e13]
+          - link "生图" [ref=f18e14] [cursor=pointer]:
+            - /url: /image/
+          - link "号池管理" [ref=f18e15] [cursor=pointer]:
+            - /url: /accounts/
+          - link "图片管理" [ref=f18e16] [cursor=pointer]:
+            - /url: /image-manager/
+          - link "日志管理" [ref=f18e17] [cursor=pointer]:
+            - /url: /logs/
+          - link "调试" [ref=f18e18] [cursor=pointer]:
+            - /url: /debug/
+          - link "设置" [ref=f18e19] [cursor=pointer]:
+            - /url: /settings/
+        - generic [ref=f18e20]:
+          - generic [ref=f18e21]:
+            - button "切换主题" [ref=f18e22]:
+              - generic [ref=f18e25]: Toggle theme
+            - link "GitHub repository" [ref=f18e26] [cursor=pointer]:
+              - /url: https://github.com/basketikun/chatgpt2api
+              - generic [ref=f18e27]: GitHub
+            - button "v1.8.0" [ref=f18e28]
+          - generic [ref=f18e29]: 管理员 · 管理员
+          - button "退出" [ref=f18e30]
+      - generic [ref=f18e31]:
+        - tablist [ref=f18e32]:
+          - tab "实时语音" [selected] [ref=f18e33]
+          - tab "搜索Skills" [ref=f18e34]
+          - tab "搜索" [ref=f18e35]
+          - tab "PPT生成" [ref=f18e36]
+          - tab "PSD生成" [ref=f18e37]
+          - tab "对话" [ref=f18e38]
+        - tabpanel "实时语音" [ref=f18e39]:
+          - generic [ref=f18e40]:
+            - generic [ref=f18e41]:
+              - generic [ref=f18e44]:
+                - paragraph [ref=f18e45]: Realtime voice lab
+                - paragraph [ref=f18e46]: 正在思考
+              - generic [ref=f18e47]:
+                - generic "RTT 232ms · 抖动 1ms · prflx" [ref=f18e133]: 网络一般
+                - combobox "选择声音" [disabled] [ref=f18e48]:
+                  - generic: Ember · 自信乐观
+                - button "结束" [ref=f18e105]
+            - generic [ref=f18e51]:
+              - generic [ref=f18e52]:
+                - generic [ref=f18e87]:
+                  - generic "正在思考" [ref=f18e134]
+                  - heading "正在思考" [level=2] [ref=f18e135]
+                  - paragraph [ref=f18e94]: 你的话已经送达
+                - generic [ref=f18e95]:
+                  - button "静音麦克风" [ref=f18e109]
+                  - generic [ref=f18e113]: 麦克风开启
+              - complementary [ref=f18e61]:
+                - generic [ref=f18e62]:
+                  - generic [ref=f18e63]:
+                    - paragraph [ref=f18e64]: Live transcript
+                    - heading "实时对话" [level=3] [ref=f18e65]
+                  - button "清空" [ref=f18e136]
+                - article [ref=f18e137]:
+                  - generic [ref=f18e138]: 你
+                  - paragraph [ref=f18e141]: 你好，能听到我吗
+                - generic [ref=f18e76]:
+                  - generic [ref=f18e77]:
+                    - textbox "说点什么，或在这里输入…" [active] [ref=f18e114]
+                    - button "发送文字" [disabled] [ref=f18e79]
+                  - group [ref=f18e83]:
+                    - generic "协议事件 · 8" [ref=f18e142] [cursor=pointer]
+                    - generic [ref=f18e117]:
+                      - paragraph [ref=f18e118]:
+                        - generic [ref=f18e119]: "[08]"
+                        - text: 正在建立端到端 WebRTC…
+                      - paragraph [ref=f18e120]:
+                        - generic [ref=f18e121]: "[49]"
+                        - text: "麦克风: live · 48000Hz · 1ch"
+                      - paragraph [ref=f18e122]:
+                        - generic [ref=f18e123]: "[53]"
+                        - text: "WebRTC: connecting"
+                      - paragraph [ref=f18e124]:
+                        - generic [ref=f18e125]: "[51]"
+                        - text: "WebRTC: connected"
+                      - paragraph [ref=f18e126]:
+                        - generic [ref=f18e127]: "[75]"
+                        - text: session.created (/v1/wm/rtc_974fd9decb134149b84e4185fa64bff1) request=4d79af6fd6d04340991bc68f8a210581
+                      - paragraph [ref=f18e128]:
+                        - generic [ref=f18e129]: "[98]"
+                        - text: "state_update: idle → listening"
+                      - paragraph [ref=f18e130]:
+                        - generic [ref=f18e131]: "[98]"
+                        - text: "startup_telemetry: {\"type\":\"startup_telemetry\",\"metrics\":[{\"name\":\"conversation loaded\",\"ms\":112.97331005334854},{\"name\":\"init_response_received\",\"ms\":232.874},{\"name\":\"prefill_start\",\"ms\":331.732},{"
+                      - paragraph [ref=f18e143]:
+                        - generic [ref=f18e144]: "[40]"
+                        - text: "text: 你好，能听到我吗"
+  - alert [ref=f18e7]

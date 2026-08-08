@@ -1,0 +1,103 @@
+- generic [ref=f22e1]:
+  - region "Notifications alt+T"
+  - main [ref=f22e2]:
+    - generic [ref=f22e3]:
+      - generic [ref=f22e9]:
+        - link "chatgpt2api" [ref=f22e11] [cursor=pointer]:
+          - /url: /image/
+        - navigation [ref=f22e12]:
+          - button "无限画布" [ref=f22e13]
+          - link "生图" [ref=f22e14] [cursor=pointer]:
+            - /url: /image/
+          - link "号池管理" [ref=f22e15] [cursor=pointer]:
+            - /url: /accounts/
+          - link "图片管理" [ref=f22e16] [cursor=pointer]:
+            - /url: /image-manager/
+          - link "日志管理" [ref=f22e17] [cursor=pointer]:
+            - /url: /logs/
+          - link "调试" [ref=f22e18] [cursor=pointer]:
+            - /url: /debug/
+          - link "设置" [ref=f22e19] [cursor=pointer]:
+            - /url: /settings/
+        - generic [ref=f22e20]:
+          - generic [ref=f22e21]:
+            - button "切换主题" [ref=f22e22]:
+              - generic [ref=f22e25]: Toggle theme
+            - link "GitHub repository" [ref=f22e26] [cursor=pointer]:
+              - /url: https://github.com/basketikun/chatgpt2api
+              - generic [ref=f22e27]: GitHub
+            - button "v1.8.0" [ref=f22e28]
+          - generic [ref=f22e29]: 管理员 · 管理员
+          - button "退出" [ref=f22e30]
+      - generic [ref=f22e31]:
+        - tablist [ref=f22e32]:
+          - tab "实时语音" [selected] [ref=f22e33]
+          - tab "搜索Skills" [ref=f22e34]
+          - tab "搜索" [ref=f22e35]
+          - tab "PPT生成" [ref=f22e36]
+          - tab "PSD生成" [ref=f22e37]
+          - tab "对话" [ref=f22e38]
+        - tabpanel "实时语音" [ref=f22e39]:
+          - generic [ref=f22e40]:
+            - generic [ref=f22e41]:
+              - generic [ref=f22e44]:
+                - paragraph [ref=f22e45]: Realtime voice lab
+                - paragraph [ref=f22e46]: 我在听
+              - generic [ref=f22e47]:
+                - generic "RTT 259ms · 抖动 1ms · prflx" [ref=f22e138]: 网络一般
+                - combobox "选择声音" [disabled] [ref=f22e48]:
+                  - generic: Ember · 自信乐观
+                - button "结束" [ref=f22e96]
+            - generic [ref=f22e51]:
+              - generic [ref=f22e52]:
+                - generic [ref=f22e53]:
+                  - generic "我在听" [ref=f22e98]
+                  - heading "我在听" [level=2] [ref=f22e99]
+                  - paragraph [ref=f22e60]: 直接说话，不需要按住按钮
+                - generic [ref=f22e61]:
+                  - button "静音麦克风" [ref=f22e100]
+                  - generic [ref=f22e104]: 麦克风开启
+              - complementary [ref=f22e65]:
+                - generic [ref=f22e66]:
+                  - generic [ref=f22e67]:
+                    - paragraph [ref=f22e68]: Live transcript
+                    - heading "实时对话" [level=3] [ref=f22e69]
+                  - button "清空" [ref=f22e108]
+                - article [ref=f22e109]:
+                  - generic [ref=f22e110]: 你
+                  - paragraph [ref=f22e113]: 你好
+                - generic [ref=f22e80]:
+                  - generic [ref=f22e81]:
+                    - textbox "说点什么，或在这里输入…" [active] [ref=f22e105]
+                    - button "发送文字" [disabled] [ref=f22e83]
+                  - group [ref=f22e87]:
+                    - generic "协议事件 · 9" [ref=f22e114] [cursor=pointer]
+                    - generic [ref=f22e118]:
+                      - paragraph [ref=f22e119]:
+                        - generic [ref=f22e120]: "[98]"
+                        - text: 正在建立端到端 WebRTC…
+                      - paragraph [ref=f22e121]:
+                        - generic [ref=f22e122]: "[36]"
+                        - text: "麦克风: live · 48000Hz · 1ch"
+                      - paragraph [ref=f22e123]:
+                        - generic [ref=f22e124]: "[99]"
+                        - text: "WebRTC: connecting"
+                      - paragraph [ref=f22e125]:
+                        - generic [ref=f22e126]: "[01]"
+                        - text: "WebRTC: connected"
+                      - paragraph [ref=f22e127]:
+                        - generic [ref=f22e128]: "[27]"
+                        - text: session.created (/v1/wm/rtc_1151d786ad594b6cacbbf229a1578fb5) request=6ce9a1d092fc4da294f9c782ef8f0103
+                      - paragraph [ref=f22e129]:
+                        - generic [ref=f22e130]: "[53]"
+                        - text: "state_update: idle → listening"
+                      - paragraph [ref=f22e131]:
+                        - generic [ref=f22e132]: "[53]"
+                        - text: "startup_telemetry: {\"type\":\"startup_telemetry\",\"metrics\":[{\"name\":\"conversation loaded\",\"ms\":70.43716101907194},{\"name\":\"init_response_received\",\"ms\":148.399},{\"name\":\"prefill_start\",\"ms\":213.585},{\""
+                      - paragraph [ref=f22e133]:
+                        - generic [ref=f22e134]: "[70]"
+                        - text: "text: 你好"
+                      - paragraph [ref=f22e135]:
+                        - generic [ref=f22e136]: "[19]"
+                        - text: "text response error: {\"message\":\"upstream HTTP 404\",\"code\":\"upstream_error\"}"
+  - alert [ref=f22e7]

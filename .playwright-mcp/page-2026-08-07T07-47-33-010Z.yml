@@ -1,0 +1,54 @@
+- generic [active] [ref=f1e1]:
+  - region "Notifications alt+T"
+  - main [ref=f1e2]:
+    - generic [ref=f1e3]:
+      - generic [ref=f1e9]:
+        - link "chatgpt2api" [ref=f1e11] [cursor=pointer]:
+          - /url: /image/
+        - navigation [ref=f1e12]:
+          - button "无限画布" [ref=f1e13]
+          - link "生图" [ref=f1e14] [cursor=pointer]:
+            - /url: /image/
+          - link "号池管理" [ref=f1e15] [cursor=pointer]:
+            - /url: /accounts/
+          - link "图片管理" [ref=f1e16] [cursor=pointer]:
+            - /url: /image-manager/
+          - link "日志管理" [ref=f1e17] [cursor=pointer]:
+            - /url: /logs/
+          - link "调试" [ref=f1e18] [cursor=pointer]:
+            - /url: /debug/
+          - link "设置" [ref=f1e20] [cursor=pointer]:
+            - /url: /settings/
+        - generic [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - button "切换主题" [ref=f1e23]:
+              - generic [ref=f1e26]: Toggle theme
+            - link "GitHub repository" [ref=f1e27] [cursor=pointer]:
+              - /url: https://github.com/basketikun/chatgpt2api
+              - generic [ref=f1e28]: GitHub
+            - button "v1.8.0" [ref=f1e29]
+          - generic [ref=f1e30]: 管理员 · 管理员
+          - button "退出" [ref=f1e31]
+      - generic [ref=f1e32]:
+        - tablist [ref=f1e33]:
+          - tab "实时语音" [selected] [ref=f1e34]
+          - tab "搜索Skills" [ref=f1e35]
+          - tab "搜索" [ref=f1e36]
+          - tab "PPT生成" [ref=f1e37]
+          - tab "PSD生成" [ref=f1e38]
+          - tab "对话" [ref=f1e39]
+        - tabpanel "实时语音" [ref=f1e40]:
+          - generic [ref=f1e41]:
+            - generic [ref=f1e42]:
+              - generic [ref=f1e43]: 连接中...
+              - generic [ref=f1e47]: 点击下方按钮开始语音对话
+              - generic [ref=f1e50]:
+                - combobox [ref=f1e51]:
+                  - generic: Ember (自信乐观)
+                - button "连接中..." [disabled]
+            - generic [ref=f1e54]:
+              - generic [ref=f1e55]: 事件日志
+              - generic [ref=f1e58]:
+                - generic [ref=f1e59]: "[46]"
+                - text: 正在连接...
+  - alert [ref=f1e7]

@@ -38,16 +38,16 @@ type TranscriptEntry = {
 type LivePhase = "offline" | "connecting" | "listening" | "thinking" | "speaking" | "muted" | "error";
 
 const VOICES = [
-  { value: "ember", label: "Ember · 自信乐观" },
-  { value: "glimmer", label: "Sol · 聪慧随性" },
-  { value: "breeze", label: "Breeze · 活泼认真" },
-  { value: "cove", label: "Cove · 沉稳直率" },
-  { value: "juniper", label: "Juniper · 开放豁达" },
-  { value: "maple", label: "Maple · 开朗直率" },
-  { value: "orbit", label: "Spruce · 冷静坚定" },
-  { value: "vale", label: "Vale · 聪颖好奇" },
-  { value: "fathom", label: "Arbor · 随和多才" },
-];
+  { value: "ember", label: "Ember · 自信乐观", preview: "/audio/voice-previews/ember.m4a" },
+  { value: "glimmer", label: "Sol · 聪慧随性", preview: "/audio/voice-previews/glimmer.m4a" },
+  { value: "breeze", label: "Breeze · 活泼认真", preview: "/audio/voice-previews/breeze.m4a" },
+  { value: "cove", label: "Cove · 沉稳直率", preview: "/audio/voice-previews/cove.m4a" },
+  { value: "juniper", label: "Juniper · 开放豁达", preview: "/audio/voice-previews/juniper.m4a" },
+  { value: "maple", label: "Maple · 开朗直率", preview: "/audio/voice-previews/maple.m4a" },
+  { value: "orbit", label: "Spruce · 冷静坚定", preview: "/audio/voice-previews/orbit.m4a" },
+  { value: "vale", label: "Vale · 聪颖好奇", preview: "/audio/voice-previews/vale.m4a" },
+  { value: "fathom", label: "Arbor · 随和多才", preview: "/audio/voice-previews/fathom.m4a" },
+] as const;
 
 const MAX_QUOTA_RETRIES = 2;
 const MAX_NETWORK_RETRIES = 3;
@@ -62,6 +62,16 @@ const PHASE_COPY: Record<LivePhase, { title: string; detail: string }> = {
   speaking: { title: "正在回答", detail: "你随时可以开口打断" },
   muted: { title: "麦克风已静音", detail: "点击下方按钮继续说话" },
   error: { title: "连接遇到问题", detail: "查看事件记录后重新开始" },
+};
+
+const PHASE_LABEL: Record<LivePhase, string> = {
+  offline: "STANDBY",
+  connecting: "LINKING",
+  listening: "LISTENING",
+  thinking: "PROCESSING",
+  speaking: "OUTPUT",
+  muted: "MUTED",
+  error: "FAULT",
 };
 
 function timestamp() {
@@ -152,6 +162,61 @@ export function RealtimePanel() {
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const pendingTranscriptUpdatesRef = useRef<TranscriptUpdate[]>([]);
   const transcriptFlushFrameRef = useRef(0);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewRequestIdRef = useRef(0);
+  const previewVoiceRef = useRef<string | null>(null);
+  const selectOpenRef = useRef(false);
+  const selectInteractionRef = useRef<"pointer" | "keyboard">("pointer");
+
+  const stopVoicePreview = useCallback(() => {
+    previewRequestIdRef.current += 1;
+    previewVoiceRef.current = null;
+    const audio = previewAudioRef.current;
+    if (!audio) return;
+    audio.pause();
+    try {
+      audio.currentTime = 0;
+    } catch {
+      // The media element can still be loading when the selector closes.
+    }
+  }, []);
+
+  const playVoicePreview = useCallback((item: (typeof VOICES)[number]) => {
+    if (!selectOpenRef.current || connected || connecting) return;
+    let audio = previewAudioRef.current;
+    if (!audio && typeof Audio !== "undefined") {
+      audio = new Audio();
+      audio.preload = "auto";
+      previewAudioRef.current = audio;
+    }
+    if (!audio) return;
+    audio.pause();
+    try {
+      audio.currentTime = 0;
+    } catch {
+      // Ignore a seek while the previous preview is still being replaced.
+    }
+    if (audio.getAttribute("src") !== item.preview) {
+      audio.src = item.preview;
+      audio.load();
+    }
+    const requestId = ++previewRequestIdRef.current;
+    previewVoiceRef.current = item.value;
+    try {
+      const playback = audio.play();
+      void playback.catch(() => {
+        if (requestId !== previewRequestIdRef.current) return;
+        audio.pause();
+        try {
+          audio.currentTime = 0;
+        } catch {
+          // Ignore a seek after an autoplay rejection.
+        }
+      });
+    } catch {
+      // Some browsers can throw synchronously when playback is disallowed.
+    }
+  }, [connected, connecting]);
 
   useEffect(() => {
     currentPhaseRef.current = phase;
@@ -160,6 +225,10 @@ export function RealtimePanel() {
   useEffect(() => {
     micActiveRef.current = micActive;
   }, [micActive]);
+
+  useEffect(() => {
+    if (connected || connecting) stopVoicePreview();
+  }, [connected, connecting, stopVoicePreview]);
 
   const addLog = useCallback((dir: LogEntry["dir"], text: string) => {
     setLogs((previous) => [
@@ -530,6 +599,7 @@ export function RealtimePanel() {
   }, [addLog]);
 
   const connect = useCallback(async (retry = false) => {
+    stopVoicePreview();
     const session = await getStoredAuthSession();
     if (!session) {
       addLog("error", "未登录，请先登录");
@@ -626,7 +696,7 @@ export function RealtimePanel() {
         );
       }
     }
-  }, [addLog, attachRemoteMeter, handleRealtimeEvent, scheduleNetworkReconnect, startMetering, stopMetering, voice]);
+  }, [addLog, attachRemoteMeter, handleRealtimeEvent, scheduleNetworkReconnect, startMetering, stopMetering, stopVoicePreview, voice]);
 
   useEffect(() => {
     connectRef.current = connect;
@@ -646,8 +716,9 @@ export function RealtimePanel() {
       window.removeEventListener("pagehide", handlePageHide);
       realtimeRef.current?.close();
       stopMetering();
+      stopVoicePreview();
     };
-  }, [connect, scheduleNetworkReconnect, stopMetering]);
+  }, [connect, scheduleNetworkReconnect, stopMetering, stopVoicePreview]);
 
   const submitText = (event: FormEvent) => {
     event.preventDefault();
@@ -664,18 +735,22 @@ export function RealtimePanel() {
         : "网络良好";
 
   return (
-    <section className="relative min-h-[680px] overflow-hidden rounded-[30px] border border-white/10 bg-[#070a16] text-white shadow-[0_30px_100px_rgba(12,18,48,0.24)]">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_35%_15%,rgba(75,98,255,0.19),transparent_35%),radial-gradient(circle_at_70%_78%,rgba(57,211,255,0.10),transparent_32%)]" />
+    <section className="realtime-panel relative min-h-[680px] overflow-hidden rounded-[30px] border border-white/10 text-white shadow-[0_30px_100px_rgba(12,18,48,0.24)]">
+      <div className="realtime-panel__scrim pointer-events-none absolute inset-0" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_35%_15%,rgba(75,98,255,0.15),transparent_35%),radial-gradient(circle_at_70%_78%,rgba(57,211,255,0.08),transparent_32%)]" />
 
-      <header className="relative z-10 flex flex-wrap items-center gap-3 border-b border-white/8 px-5 py-4 md:px-7">
+      <header className="relative z-10 flex flex-wrap items-center gap-3 border-b border-white/10 px-5 py-4 md:px-7">
         <div className="flex min-w-0 items-center gap-3">
-          <span className={`size-2 rounded-full ${connected ? "bg-cyan-300 shadow-[0_0_16px_#67e8f9]" : connecting ? "animate-pulse bg-violet-300" : "bg-white/25"}`} />
+          <span className={`realtime-status-dot size-2 rounded-full ${connected ? "bg-cyan-300 shadow-[0_0_16px_#67e8f9]" : connecting ? "bg-violet-300" : phase === "error" ? "bg-rose-300" : "bg-white/25"}`} />
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/38">Realtime voice lab</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/38">Arc / realtime voice core</p>
             <p className="truncate text-sm font-medium text-white/88">{phaseCopy.title}</p>
           </div>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <span className={`realtime-phase-label hidden rounded-full border px-2.5 py-1 text-[10px] font-semibold tracking-[0.18em] sm:inline-flex realtime-phase-label--${phase}`}>
+            {PHASE_LABEL[phase]}
+          </span>
           {connected && (
             <span
               className="hidden items-center gap-1.5 rounded-full border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] text-white/42 sm:flex"
@@ -685,18 +760,54 @@ export function RealtimePanel() {
               {qualityLabel}
             </span>
           )}
-          <Select value={voice} onValueChange={setVoice} disabled={connected || connecting}>
-            <SelectTrigger aria-label="选择声音" className="h-9 w-[190px] border-white/10 bg-white/6 text-xs text-white shadow-none hover:bg-white/10">
+          <Select
+            value={voice}
+            onValueChange={setVoice}
+            onOpenChange={(open) => {
+              selectOpenRef.current = open;
+              if (!open) stopVoicePreview();
+            }}
+            disabled={connected || connecting}
+          >
+            <SelectTrigger
+              aria-label="选择声音"
+              onPointerDownCapture={(event) => {
+                if (event.button === 0) selectInteractionRef.current = "pointer";
+              }}
+              onKeyDownCapture={(event) => {
+                if (["Enter", " ", "ArrowDown", "ArrowUp", "Home", "End", "F4"].includes(event.key)) {
+                  selectInteractionRef.current = "keyboard";
+                }
+              }}
+              className="h-11 w-[190px] max-w-[calc(100vw-2.5rem)] border-white/10 bg-white/6 text-xs text-white shadow-none transition-colors duration-200 hover:bg-white/10"
+            >
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent
+              onKeyDownCapture={(event) => {
+                if (event.key !== "Escape") {
+                  selectInteractionRef.current = "keyboard";
+                }
+              }}
+            >
               {VOICES.map((item) => (
-                <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                <SelectItem
+                  key={item.value}
+                  value={item.value}
+                  title="悬停或聚焦试听"
+                  onPointerEnter={() => playVoicePreview(item)}
+                  onPointerLeave={stopVoicePreview}
+                  onFocus={() => {
+                    if (selectInteractionRef.current === "keyboard") playVoicePreview(item);
+                  }}
+                >
+                  {item.label}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
           {connected && (
-            <Button onClick={disconnect} size="sm" variant="ghost" className="rounded-full text-white/60 hover:bg-white/10 hover:text-white">
+            <Button onClick={disconnect} size="sm" variant="ghost" className="min-h-11 rounded-full text-white/60 transition-colors duration-200 hover:bg-white/10 hover:text-white">
               <PhoneOff className="size-4" />
               <span className="hidden sm:inline">结束</span>
             </Button>
@@ -705,23 +816,32 @@ export function RealtimePanel() {
       </header>
 
       <div className="relative z-10 grid min-h-[610px] lg:grid-cols-[minmax(0,1fr)_390px]">
-        <div className="relative flex min-h-[520px] flex-col items-center justify-center overflow-hidden border-b border-white/8 px-5 py-10 lg:border-r lg:border-b-0">
-          <div className="pointer-events-none absolute inset-0 opacity-[0.12] [background-image:linear-gradient(rgba(255,255,255,.12)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.12)_1px,transparent_1px)] [background-size:48px_48px] [mask-image:radial-gradient(circle_at_center,black,transparent_72%)]" />
+        <div className="realtime-core-stage relative flex min-h-[560px] flex-col items-center justify-center overflow-hidden border-b border-white/10 px-5 py-12 lg:border-r lg:border-b-0">
+          <div className="realtime-core-grid pointer-events-none absolute inset-0" />
+          <div className="realtime-core-axis realtime-core-axis--x pointer-events-none absolute left-[8%] right-[8%] top-1/2" />
+          <div className="realtime-core-axis realtime-core-axis--y pointer-events-none absolute bottom-[10%] top-[10%] left-1/2" />
+          <div className="realtime-core-hud pointer-events-none absolute left-5 right-5 top-5 flex items-center justify-between text-[9px] font-semibold uppercase tracking-[0.22em] text-white/28 md:left-8 md:right-8">
+            <span>Core / ARC-01</span>
+            <span>{connected ? "LINK ACTIVE" : connecting ? "CALIBRATING" : "STANDBY"}</span>
+          </div>
 
           {!connected && !connecting ? (
             <button
               type="button"
               onClick={() => void connect()}
               disabled={!canUseMic}
-              className="group relative grid size-48 place-items-center rounded-full outline-none transition-transform duration-500 hover:scale-[1.035] focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="开始实时对话"
+              className="realtime-start-core group relative grid size-56 place-items-center rounded-full outline-none transition-transform duration-250 hover:scale-[1.02] focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-4 focus-visible:ring-offset-[#070a16] disabled:cursor-not-allowed disabled:opacity-45 md:size-64"
             >
-              <span className="absolute inset-0 rounded-full bg-[conic-gradient(from_210deg,#4f46e5,#22d3ee,#c084fc,#4f46e5)] opacity-90 blur-[1px] transition-transform duration-700 group-hover:rotate-12" />
-              <span className="absolute inset-[2px] rounded-full bg-[#0b1025]" />
-              <span className="relative flex flex-col items-center gap-3">
-                <span className="grid size-14 place-items-center rounded-full bg-white text-[#11152c] shadow-[0_0_40px_rgba(111,222,255,.38)]">
+              <span className="realtime-start-core__ring realtime-start-core__ring--outer absolute inset-0 rounded-full" />
+              <span className="realtime-start-core__ring realtime-start-core__ring--inner absolute inset-[10%] rounded-full" />
+              <span className="realtime-start-core__ticks absolute inset-[4%] rounded-full" />
+              <span className="realtime-start-core__center relative flex flex-col items-center gap-3">
+                <span className="grid size-14 place-items-center rounded-full border border-cyan-100/80 bg-cyan-50 text-[#081021] shadow-[0_0_40px_rgba(111,222,255,.38)] transition-transform duration-250 group-hover:scale-105">
                   <Phone className="size-6" />
                 </span>
-                <span className="text-sm font-medium tracking-wide">开始实时对话</span>
+                <span className="text-sm font-medium tracking-wide text-white/90">开始实时对话</span>
+                <span className="text-[9px] font-semibold uppercase tracking-[0.24em] text-cyan-200/50">Initialize voice link</span>
               </span>
             </button>
           ) : (
@@ -729,17 +849,30 @@ export function RealtimePanel() {
               <div
                 ref={orbRef}
                 data-phase={phase}
+                role="img"
                 className="realtime-orb-shell relative size-56 md:size-64"
                 style={{ "--voice-level": 0 } as CSSProperties}
-                aria-label={phaseCopy.title}
+                aria-label={`${PHASE_LABEL[phase]} · ${phaseCopy.title}`}
               >
-                <div className="realtime-orb-aura absolute -inset-12 rounded-full" />
-                <div className="realtime-orb absolute inset-0 overflow-hidden rounded-[46%_54%_52%_48%/50%_44%_56%_50%]">
-                  <span className="realtime-orb-light absolute inset-[12%] rounded-full" />
-                  <span className="realtime-orb-glint absolute left-[27%] top-[22%] size-[24%] rounded-full" />
+                <div className="realtime-orb-aura absolute -inset-12 rounded-full" aria-hidden="true" />
+                <div className="realtime-core-ring realtime-core-ring--outer absolute inset-[-4%] rounded-full" aria-hidden="true" />
+                <div className="realtime-core-ring realtime-core-ring--middle absolute inset-[5%] rounded-full" aria-hidden="true" />
+                <div className="realtime-core-ring realtime-core-ring--inner absolute inset-[13%] rounded-full" aria-hidden="true" />
+                <div className="realtime-core-ticks absolute inset-[-1%] rounded-full" aria-hidden="true" />
+                <div className="realtime-core-radial absolute inset-[8%] rounded-full" aria-hidden="true" />
+                <div className="realtime-core-scan absolute inset-[18%] rounded-full" aria-hidden="true" />
+                <div className="realtime-orb absolute inset-[21%] overflow-hidden rounded-full" aria-hidden="true">
+                  <span className="realtime-orb-light absolute inset-[9%] rounded-full" />
+                  <span className="realtime-orb-glint absolute left-[24%] top-[20%] size-[23%] rounded-full" />
+                  <span className="realtime-core-pupil absolute inset-[31%] rounded-full" />
+                </div>
+                <div className="realtime-core-readout pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.28em] text-white/80">{PHASE_LABEL[phase]}</span>
+                  <span className="mt-1 text-[8px] font-medium uppercase tracking-[0.2em] text-white/42">AUDIO REACTIVE</span>
                 </div>
               </div>
-              <h2 className="mt-10 text-2xl font-medium tracking-[-0.025em] text-white md:text-3xl">{phaseCopy.title}</h2>
+              <p className="mt-9 text-[10px] font-semibold uppercase tracking-[0.28em] text-white/42">{PHASE_LABEL[phase]} · {connected ? "LINK ACTIVE" : "CALIBRATING"}</p>
+              <h2 className="mt-2 text-2xl font-medium tracking-[-0.025em] text-white md:text-3xl">{phaseCopy.title}</h2>
               <p className="mt-2 text-sm text-white/48">{statusDetail}</p>
             </div>
           )}
@@ -747,7 +880,7 @@ export function RealtimePanel() {
           <div className="relative mt-10 flex min-h-10 items-center justify-center gap-3">
             {connecting && (
               <span className="flex items-center gap-2 text-xs text-white/48">
-                <Activity className="size-4 animate-pulse text-cyan-300" />
+                <Activity className="size-4 text-violet-200" />
                 正在连接
               </span>
             )}
@@ -756,6 +889,7 @@ export function RealtimePanel() {
                 <button
                   type="button"
                   onClick={micActive ? stopMic : startMic}
+                  aria-pressed={micActive}
                   className={`grid size-11 place-items-center rounded-full border transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 ${
                     micActive
                       ? "border-white/12 bg-white/10 text-white hover:bg-white/16"
@@ -779,14 +913,14 @@ export function RealtimePanel() {
           )}
         </div>
 
-        <aside className="flex min-h-[520px] flex-col bg-white/[0.035] backdrop-blur-2xl">
+        <aside className="flex min-h-[520px] min-w-0 flex-col bg-white/[0.035] backdrop-blur-2xl">
           <div className="flex items-center justify-between border-b border-white/8 px-5 py-4">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/35">Live transcript</p>
               <h3 className="mt-1 text-sm font-medium text-white/82">实时对话</h3>
             </div>
             {transcript.length > 0 && (
-              <button type="button" onClick={() => setTranscript([])} className="text-xs text-white/32 hover:text-white/70">清空</button>
+              <button type="button" onClick={() => setTranscript([])} className="min-h-11 cursor-pointer px-2 text-xs text-white/32 transition-colors duration-200 hover:text-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300">清空</button>
             )}
           </div>
 
@@ -835,7 +969,7 @@ export function RealtimePanel() {
               <button
                 type="submit"
                 disabled={!connected || !textInput.trim()}
-                className="grid size-9 shrink-0 place-items-center rounded-xl bg-white text-[#11152c] transition-transform hover:scale-105 disabled:opacity-25 disabled:hover:scale-100"
+                className="grid size-11 shrink-0 place-items-center rounded-xl bg-white text-[#11152c] transition-transform duration-200 hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-25 disabled:hover:scale-100"
                 aria-label="发送文字"
               >
                 <Send className="size-4" />

@@ -1,0 +1,77 @@
+- generic [active] [ref=e1]:
+  - region "Notifications alt+T"
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e48]:
+        - link "chatgpt2api" [ref=e50] [cursor=pointer]:
+          - /url: /image/
+        - navigation [ref=e51]:
+          - button "无限画布" [ref=e52]
+          - link "生图" [ref=e53] [cursor=pointer]:
+            - /url: /image/
+          - link "号池管理" [ref=e54] [cursor=pointer]:
+            - /url: /accounts/
+          - link "图片管理" [ref=e55] [cursor=pointer]:
+            - /url: /image-manager/
+          - link "日志管理" [ref=e56] [cursor=pointer]:
+            - /url: /logs/
+          - link "调试" [ref=e57] [cursor=pointer]:
+            - /url: /debug/
+          - link "设置" [ref=e58] [cursor=pointer]:
+            - /url: /settings/
+        - generic [ref=e59]:
+          - generic [ref=e60]:
+            - button "切换主题" [ref=e61]:
+              - generic [ref=e64]: Toggle theme
+            - link "GitHub repository" [ref=e65] [cursor=pointer]:
+              - /url: https://github.com/basketikun/chatgpt2api
+              - generic [ref=e66]: GitHub
+            - button "v1.8.0" [ref=e67]
+          - generic [ref=e68]: 管理员 · 管理员
+          - button "退出" [ref=e69]
+      - generic [ref=e266]:
+        - tablist [ref=e267]:
+          - tab "实时语音" [selected] [ref=e268]
+          - tab "搜索Skills" [ref=e269]
+          - tab "搜索" [ref=e270]
+          - tab "PPT生成" [ref=e271]
+          - tab "PSD生成" [ref=e272]
+          - tab "对话" [ref=e273]
+        - tabpanel "实时语音" [ref=e274]:
+          - generic [ref=e275]:
+            - generic [ref=e276]:
+              - generic [ref=e277]:
+                - generic [ref=e278]: 会话已建立 — 可以说话
+                - button "静音" [ref=e298]
+              - generic [ref=e281]: 开始说话，对话内容将在此显示...
+              - generic [ref=e283]:
+                - generic [ref=e299]:
+                  - textbox "输入文字消息（或直接说话）..." [ref=e300]
+                  - button "发送" [disabled]
+                - generic [ref=e284]:
+                  - combobox [disabled] [ref=e285]:
+                    - generic: Ember (自信乐观)
+                  - button "结束对话" [ref=e302]
+            - generic [ref=e289]:
+              - generic [ref=e290]: 事件日志
+              - generic [ref=e292]:
+                - generic [ref=e293]:
+                  - generic [ref=e294]: "[65]"
+                  - text: 正在建立端到端 WebRTC...
+                - generic [ref=e295]:
+                  - generic [ref=e296]: "[56]"
+                  - text: "Failed to execute 'setRemoteDescription' on 'RTCPeerConnection': Failed to parse SessionDescription. a=ice-pwd:xfLXmImvMbaeLrgfAFlYoPScJFd7j6II Invalid SDP line."
+                - generic [ref=e303]:
+                  - generic [ref=e304]: "[54]"
+                  - text: 正在建立端到端 WebRTC...
+                - generic [ref=e305]:
+                  - generic [ref=e306]: "[21]"
+                  - text: "WebRTC: connecting"
+                - generic [ref=e307]:
+                  - generic [ref=e308]: "[65]"
+                  - text: "WebRTC: connected"
+                - generic [ref=e309]:
+                  - generic [ref=e310]: "[66]"
+                  - text: ← session.created (/v1/wm/rtc_df3e1512e2e24e88982b6a156bc71421)
+  - button "Open Next.js Dev Tools" [ref=e12] [cursor=pointer]
+  - alert [ref=e40]

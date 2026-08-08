@@ -1,0 +1,32 @@
+- generic [ref=f20e1]:
+  - heading "GPT Realtime Voice Debug" [level=1] [ref=f20e2]
+  - generic [ref=f20e3]:
+    - generic [ref=f20e4]:
+      - generic [ref=f20e5]:
+        - text: API Key
+        - textbox "API Key" [ref=f20e6]:
+          - /placeholder: sk-...
+          - text: sk-t3GrIUx0nFeGtKus7opM_ZR-nI8jB0nd
+      - generic [ref=f20e7]:
+        - text: Model
+        - combobox "Model" [ref=f20e8]:
+          - option "gpt-4o-realtime-preview" [selected]
+          - option "gpt-realtime-2.1"
+      - generic [ref=f20e9]:
+        - text: Voice
+        - combobox "Voice" [ref=f20e10]:
+          - option "Ember" [selected]
+          - option "Sol (Glimmer)"
+          - option "Breeze"
+          - option "Cove"
+          - option "Juniper"
+          - option "Maple"
+          - option "Spruce (Orbit)"
+          - option "Vale"
+          - option "Arbor (Fathom)"
+      - button "断开" [active] [ref=f20e16] [cursor=pointer]
+      - generic [ref=f20e12]: 已连接 — 等待 session.created
+    - generic [ref=f20e15]:
+      - generic [ref=f20e17]: "[688] Connecting to ws://localhost:8000/v1/realtime?model=gpt-4o-realtime-preview"
+      - generic [ref=f20e18]: "[709] WebSocket connected"
+      - generic [ref=f20e19]: "[710] → session.update"

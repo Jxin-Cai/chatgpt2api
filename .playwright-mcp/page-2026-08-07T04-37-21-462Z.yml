@@ -1,0 +1,26 @@
+- generic [active] [ref=f23e1]:
+  - heading "GPT Realtime Voice Debug" [level=1] [ref=f23e2]
+  - generic [ref=f23e4]:
+    - generic [ref=f23e5]:
+      - text: API Key
+      - textbox "API Key" [ref=f23e6]:
+        - /placeholder: sk-...
+    - generic [ref=f23e7]:
+      - text: Model
+      - combobox "Model" [ref=f23e8]:
+        - option "gpt-4o-realtime-preview" [selected]
+        - option "gpt-realtime-2.1"
+    - generic [ref=f23e9]:
+      - text: Voice
+      - combobox "Voice" [ref=f23e10]:
+        - option "Ember" [selected]
+        - option "Sol (Glimmer)"
+        - option "Breeze"
+        - option "Cove"
+        - option "Juniper"
+        - option "Maple"
+        - option "Spruce (Orbit)"
+        - option "Vale"
+        - option "Arbor (Fathom)"
+    - button "连接" [ref=f23e11] [cursor=pointer]
+    - generic [ref=f23e12]: 未连接

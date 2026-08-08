@@ -1,0 +1,4 @@
+[     233ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ http://localhost:8000/realtime-debug.html:0
+[     267ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8000/favicon.ico:0
+[   16222ms] [WARNING] WebSocket connection to 'ws://localhost:8000/v1/realtime?model=gpt-4o-realtime-preview' failed: WebSocket is closed before the connection is established. @ http://localhost:8000/realtime-debug.html:119
+[   16239ms] [ERROR] WebSocket connection to 'ws://localhost:8000/v1/realtime?model=gpt-4o-realtime-preview&authorization=Bearer%20sk-t3GrIUx0nFeGtKus7opM_ZR-nI8jB0nd' failed: Error during WebSocket handshake: Unexpected response code: 404 @ http://localhost:8000/realtime-debug.html:120
