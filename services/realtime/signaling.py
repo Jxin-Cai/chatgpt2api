@@ -155,6 +155,20 @@ class RealtimeSignalingGuard:
             )
             return chain.last_token
 
+    def get_attempt_token(self, identity_key: str, attempt_id: str) -> str | None:
+        """Return the access_token associated with an active attempt, or None."""
+        now = time.monotonic()
+        with self._lock:
+            chain = self._attempts.get(attempt_id)
+            if (
+                chain is None
+                or chain.identity_key != identity_key
+                or chain.expires_at <= now
+                or not chain.last_token
+            ):
+                return None
+            return chain.last_token
+
     def cool_account(self, access_token: str, cooldown_seconds: int) -> None:
         if not access_token:
             return

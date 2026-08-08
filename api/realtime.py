@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from api.support import require_identity
@@ -37,6 +39,12 @@ class RealtimeOffer(BaseModel):
         if normalized not in REALTIME_VOICE_IDS:
             raise ValueError(f"unsupported voice: {value}")
         return normalized
+
+
+class RealtimeTextInput(BaseModel):
+    text: str = Field(min_length=1, max_length=10_000)
+    conversation_id: str = Field(min_length=10, max_length=100)
+    parent_message_id: str = Field(default="", max_length=100)
 
 
 class RealtimeQuotaReport(BaseModel):
@@ -274,6 +282,51 @@ def create_router() -> APIRouter:
             "restore_at": restore_at
             or (datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds)).isoformat(),
         }
+
+    @router.post("/v1/realtime/sessions/{attempt_id}/text")
+    async def send_realtime_text(
+        attempt_id: str,
+        body: RealtimeTextInput,
+        authorization: str | None = Header(default=None),
+    ):
+        """向活跃的实时语音会话注入文字消息（通过 ChatGPT conversation API）。"""
+        identity = require_identity(authorization)
+        identity_key = str(identity.get("id") or identity.get("name") or "anonymous")
+        request_id = uuid.uuid4().hex
+
+        access_token = realtime_signaling_guard.get_attempt_token(identity_key, attempt_id)
+        if not access_token:
+            return _error_response(
+                status_code=404,
+                code="realtime_attempt_not_found",
+                message="Realtime attempt is unknown or expired",
+                request_id=request_id,
+                retryable=False,
+            )
+
+        from services.openai_backend_api import OpenAIBackendAPI
+        from utils.helper import new_uuid
+
+        def _stream_text():
+            api = OpenAIBackendAPI(access_token)
+            try:
+                from utils.helper import iter_sse_payloads
+                for chunk in api.stream_conversation(
+                    messages=[{"role": "user", "content": body.text}],
+                    model="auto",
+                ):
+                    yield f"data: {chunk}\n\n"
+            except Exception as exc:
+                yield f"data: {json.dumps({'type': 'error', 'error': {'message': str(exc)[:200], 'code': 'internal_error'}})}\n\n"
+            finally:
+                api.close()
+
+        import json
+        return StreamingResponse(
+            _stream_text(),
+            media_type="text/event-stream",
+            headers={"X-Request-ID": request_id, "Cache-Control": "no-cache"},
+        )
 
     @router.websocket("/v1/realtime")
     async def realtime_endpoint(
