@@ -130,6 +130,7 @@ export function RealtimePanel() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [textInput, setTextInput] = useState("");
+  const [textApplying, setTextApplying] = useState(false);
   const [quality, setQuality] = useState<RealtimeConnectionQuality | null>(null);
 
   const realtimeRef = useRef<RealtimeWebRTCConnection | null>(null);
@@ -151,9 +152,10 @@ export function RealtimePanel() {
   const reconnectCountRef = useRef(0);
   const disconnectRequestedRef = useRef(false);
   const attemptIdRef = useRef("");
+  const resumeHandleRef = useRef("");
   const conversationIdRef = useRef("");
   const parentMessageIdRef = useRef("");
-  const connectRef = useRef<(retry?: boolean) => Promise<void>>(async () => {});
+  const connectRef = useRef<(retry?: boolean, preserveSession?: boolean) => Promise<void>>(async () => {});
   const logIdRef = useRef(0);
   const transcriptIdRef = useRef(0);
   const transcriptTurnRef = useRef(0);
@@ -367,6 +369,9 @@ export function RealtimePanel() {
     const type = data.type || "unknown";
     const chatDelta = chatTranscriptUpdateFromEvent(data, chatTranscriptCursorRef.current);
     if (chatDelta) chatTranscriptCursorRef.current = chatDelta.cursor;
+    if (chatDelta?.cursor?.role === "assistant" && chatDelta.cursor.messageId) {
+      parentMessageIdRef.current = chatDelta.cursor.messageId;
+    }
     const transcriptUpdate = chatDelta?.update || transcriptUpdateFromEvent(data);
     if (transcriptUpdate) applyTranscriptUpdate(transcriptUpdate);
 
@@ -392,6 +397,8 @@ export function RealtimePanel() {
     } else if (type === "startup_telemetry") {
       const conversationId = data.conversation_id as string | undefined;
       if (conversationId) conversationIdRef.current = conversationId;
+      const parentMessageId = data.parent_message_id as string | undefined;
+      if (parentMessageId) parentMessageIdRef.current = parentMessageId;
       addLog("recv", `startup_telemetry: ${JSON.stringify(data).substring(0, 180)}`);
     } else if (type === "usage_update" || type === "goodbye") {
       const rateLimit = data.rate_limit_message as Record<string, unknown> | undefined;
@@ -456,6 +463,7 @@ export function RealtimePanel() {
     if (!realtimeRef.current || !normalized) return;
     const attemptId = attemptIdRef.current;
     const conversationId = conversationIdRef.current;
+    const sessionHandle = resumeHandleRef.current;
 
     applyTranscriptUpdate({
       role: "user",
@@ -466,18 +474,23 @@ export function RealtimePanel() {
     });
     setPhase("thinking");
     setStatusDetail(PHASE_COPY.thinking.detail);
+    setTextApplying(true);
     addLog("send", `text: ${normalized.substring(0, 60)}`);
     setTextInput("");
 
     if (!conversationId || !attemptId) {
-      addLog("warn", "无 conversation_id，文本无法发送");
+      addLog("info", "无 conversation_id，文本无法发送");
       setPhase(micActiveRef.current ? "listening" : "muted");
       setStatusDetail("语音会话尚未就绪，请稍后重试");
+      setTextApplying(false);
       return;
     }
 
     const session = await getStoredAuthSession();
-    if (!session) return;
+    if (!session) {
+      setTextApplying(false);
+      return;
+    }
     const signalingBase = webConfig.apiUrl
       ? new URL("/v1/realtime/sessions", webConfig.apiUrl).toString()
       : "/v1/realtime/sessions";
@@ -492,6 +505,7 @@ export function RealtimePanel() {
           text: normalized,
           conversation_id: conversationId,
           parent_message_id: parentMessageIdRef.current || undefined,
+          resume_handle: sessionHandle || undefined,
         }),
       });
       if (!response.ok) {
@@ -499,10 +513,14 @@ export function RealtimePanel() {
         addLog("error", `text inject failed: HTTP ${response.status} ${errText.substring(0, 100)}`);
         setPhase(micActiveRef.current ? "listening" : "muted");
         setStatusDetail("文字发送失败，请重试");
+        setTextApplying(false);
         return;
       }
       const reader = response.body?.getReader();
-      if (!reader) return;
+      if (!reader) {
+        setTextApplying(false);
+        return;
+      }
       const decoder = new TextDecoder();
       let assistantText = "";
       const sourceId = startTurn("assistant");
@@ -522,6 +540,12 @@ export function RealtimePanel() {
           if (raw === "[DONE]") continue;
           try {
             const payload = JSON.parse(raw);
+            const latestParent = typeof payload?.message?.id === "string"
+              ? payload.message.id
+              : typeof payload?.parent_message_id === "string"
+                ? payload.parent_message_id
+                : "";
+            if (latestParent) parentMessageIdRef.current = latestParent;
             const message = payload?.message;
             if (message?.author?.role === "assistant" && message?.content?.parts) {
               const newText = message.content.parts.join("");
@@ -540,11 +564,18 @@ export function RealtimePanel() {
       if (assistantText) {
         applyTranscriptUpdate({ role: "assistant", text: assistantText, mode: "replace", final: true, sourceId });
       }
+      setTextApplying(false);
       setPhase(micActiveRef.current ? "listening" : "muted");
       setStatusDetail(PHASE_COPY[micActiveRef.current ? "listening" : "muted"].detail);
+      // Text injection updates the same conversation server-side. Reopen the
+      // media session with its pinned account and latest cursor.
+      if (resumeHandleRef.current && !disconnectRequestedRef.current) {
+        void connectRef.current(false, true);
+      }
     } catch (err) {
       addLog("error", `text inject error: ${err instanceof Error ? err.message : String(err)}`);
       setPhase(micActiveRef.current ? "listening" : "muted");
+      setTextApplying(false);
     }
   }, [addLog, applyTranscriptUpdate, startTurn]);
 
@@ -557,6 +588,7 @@ export function RealtimePanel() {
     quotaRetryScheduledRef.current = false;
     reconnectCountRef.current = 0;
     attemptIdRef.current = "";
+    resumeHandleRef.current = "";
     conversationIdRef.current = "";
     parentMessageIdRef.current = "";
     realtimeRef.current?.close();
@@ -565,6 +597,7 @@ export function RealtimePanel() {
     micActiveRef.current = false;
     setConnected(false);
     setConnecting(false);
+    setTextApplying(false);
     setMicActive(false);
     setQuality(null);
     setPhase("offline");
@@ -592,7 +625,7 @@ export function RealtimePanel() {
     }, delay);
   }, [addLog]);
 
-  const connect = useCallback(async (retry = false) => {
+  const connect = useCallback(async (retry = false, preserveSession = false) => {
     stopVoicePreview();
     const session = await getStoredAuthSession();
     if (!session) {
@@ -607,15 +640,29 @@ export function RealtimePanel() {
     setMicActive(false);
     setConnecting(true);
     setPhase("connecting");
-    setStatusDetail(retry ? "正在选择下一个可用账号" : PHASE_COPY.connecting.detail);
+    setStatusDetail(
+      retry
+        ? "正在选择下一个可用账号"
+        : preserveSession
+          ? "正在应用文字并恢复语音会话"
+          : PHASE_COPY.connecting.detail,
+    );
     terminalErrorRef.current = "";
     quotaRetryScheduledRef.current = false;
-    if (!retry) {
+    if (!retry && !preserveSession) {
       quotaRetryCountRef.current = 0;
       attemptIdRef.current = "";
     }
-    conversationIdRef.current = "";
-    parentMessageIdRef.current = "";
+    // A quota retry must start a fresh conversation/session binding.  Keep
+    // only attempt_id so the server can exclude the exhausted account; never
+    // carry the old pinned resume handle or conversation cursor to another
+    // account.  A text-application reconnect is the sole path that preserves
+    // those fields.
+    if (retry || !preserveSession) {
+      conversationIdRef.current = "";
+      parentMessageIdRef.current = "";
+      resumeHandleRef.current = "";
+    }
 
     const signalingUrl = webConfig.apiUrl
       ? new URL("/v1/realtime/sessions", webConfig.apiUrl).toString()
@@ -655,13 +702,18 @@ export function RealtimePanel() {
         authorization: `Bearer ${session.key}`,
         voice,
         signalingUrl,
-        attemptId: retry ? attemptIdRef.current : undefined,
+        attemptId: (retry || preserveSession) ? attemptIdRef.current : undefined,
+        conversationId: preserveSession ? conversationIdRef.current : undefined,
+        parentMessageId: preserveSession ? parentMessageIdRef.current : undefined,
+        resumeHandle: preserveSession ? resumeHandleRef.current : undefined,
       });
       if (realtimeRef.current !== connection) return;
       setConnected(true);
       reconnectCountRef.current = 0;
       attemptIdRef.current = result.attemptId;
+      if (result.resumeHandle) resumeHandleRef.current = result.resumeHandle;
       setConnecting(false);
+      if (preserveSession) setTextApplying(false);
       micActiveRef.current = true;
       setMicActive(true);
       setPhase("listening");
@@ -677,6 +729,7 @@ export function RealtimePanel() {
       realtimeRef.current = null;
       setConnected(false);
       setConnecting(false);
+      setTextApplying(false);
       micActiveRef.current = false;
       setMicActive(false);
       setPhase("error");
@@ -953,22 +1006,22 @@ export function RealtimePanel() {
             )}
           </div>
 
-          <div className="border-t border-white/8 p-4">
+      <div className="border-t border-white/8 p-4">
             <form onSubmit={submitText} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.055] p-1.5 focus-within:border-cyan-300/35 focus-within:bg-white/[0.075]">
               <input
                 value={textInput}
                 onChange={(event) => setTextInput(event.target.value)}
-                disabled={!connected}
-                placeholder={connected ? "说点什么，或在这里输入…" : "开始对话后可输入文字"}
+                disabled={!connected || textApplying}
+                placeholder={textApplying ? "正在应用到语音会话…" : connected ? "说点什么，或在这里输入…" : "开始对话后可输入文字"}
                 className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-white outline-none placeholder:text-white/25 disabled:cursor-not-allowed"
               />
               <button
                 type="submit"
-                disabled={!connected || !textInput.trim()}
+                disabled={!connected || textApplying || !textInput.trim()}
                 className="grid size-11 shrink-0 place-items-center rounded-xl bg-white text-[#11152c] transition-transform duration-200 hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-25 disabled:hover:scale-100"
                 aria-label="发送文字"
               >
-                <Send className="size-4" />
+                <Send className={`size-4 ${textApplying ? "animate-pulse" : ""}`} />
               </button>
             </form>
 

@@ -4,6 +4,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import realtime
+from services import openai_backend_api
+from services.realtime import signaling as realtime_signaling
 from services.realtime.signaling import RealtimeSignalingGuard
 
 
@@ -117,6 +119,87 @@ def test_realtime_signaling_retry_excludes_previously_selected_account():
     assert first.status_code == 200
     assert second.status_code == 200
     assert selected == [set(), {"first-token"}]
+
+
+def test_pinned_realtime_session_requires_identity_expires_and_resumes_same_token():
+    guard = RealtimeSignalingGuard(
+        max_concurrency=1,
+        rate_per_minute=10,
+        attempt_ttl_seconds=30,
+        session_ttl_seconds=1,
+    )
+
+    with mock.patch.object(realtime_signaling.time, "monotonic", return_value=100.0):
+        handle = guard.pin_session("user-a", "account-token", conversation_id="conversation-123")
+        assert guard.resume_session("user-a", handle, conversation_id="conversation-123") == "account-token"
+        assert guard.get_pinned_token("user-b", handle) is None
+
+    with mock.patch.object(realtime_signaling.time, "monotonic", return_value=101.1):
+        assert guard.resume_session("user-a", handle) is None
+
+
+def test_realtime_signaling_resume_uses_pinned_account_token():
+    app = FastAPI()
+    app.include_router(realtime.create_router())
+    guard = RealtimeSignalingGuard(max_concurrency=1, rate_per_minute=10, attempt_ttl_seconds=30)
+    exchange = mock.AsyncMock(return_value=("answer-sdp", "session-location"))
+
+    with (
+        mock.patch.object(realtime, "realtime_signaling_guard", guard),
+        mock.patch.object(realtime, "require_identity", return_value={"id": "resume-user", "name": "tester"}),
+        mock.patch.object(realtime.account_service, "get_realtime_access_token", return_value="pinned-token") as get_token,
+        mock.patch.object(realtime.account_service, "mark_realtime_available"),
+        mock.patch.object(realtime, "exchange_realtime_sdp", new=exchange),
+    ):
+        client = TestClient(app)
+        first = client.post(
+            "/v1/realtime/sessions",
+            headers={"Authorization": "Bearer client-key"},
+            json={
+                "sdp": "v=0\r\n" + "a=x\r\n" * 30,
+                "conversation_id": "conversation-123",
+            },
+        )
+        handle = first.json()["resume_handle"]
+        second = client.post(
+            "/v1/realtime/sessions",
+            headers={"Authorization": "Bearer client-key"},
+            json={
+                "sdp": "v=0\r\n" + "a=x\r\n" * 30,
+                "conversation_id": "conversation-123",
+                "resume_handle": handle,
+            },
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert get_token.call_count == 1
+    assert exchange.await_args_list[0].kwargs["access_token"] == "pinned-token"
+    assert exchange.await_args_list[1].kwargs["access_token"] == "pinned-token"
+
+
+def test_realtime_text_uses_conversation_current_node_when_parent_is_omitted():
+    app = FastAPI()
+    app.include_router(realtime.create_router())
+    backend = mock.Mock()
+    backend._get_conversation.return_value = {"current_node": "current-node-789"}
+    backend.stream_conversation.return_value = iter(["{\"message\": {\"id\": \"assistant-1\"}}", "[DONE]"])
+
+    with (
+        mock.patch.object(realtime, "require_identity", return_value={"id": "text-user", "name": "tester"}),
+        mock.patch.object(realtime.realtime_signaling_guard, "get_attempt_token", return_value="pinned-token"),
+        mock.patch.object(openai_backend_api, "OpenAIBackendAPI", return_value=backend),
+    ):
+        response = TestClient(app).post(
+            "/v1/realtime/sessions/attempt-123456789/text",
+            headers={"Authorization": "Bearer client-key"},
+            json={"text": "你好", "conversation_id": "conversation-123"},
+        )
+
+    assert response.status_code == 200
+    backend._get_conversation.assert_called_once_with("conversation-123")
+    backend.stream_conversation.assert_called_once()
+    assert backend.stream_conversation.call_args.kwargs["parent_message_id"] == "current-node-789"
 
 
 def test_realtime_signaling_hides_upstream_error_body():

@@ -31,6 +31,13 @@ class RealtimeOffer(BaseModel):
     voice: str = Field(default=REALTIME_DEFAULT_VOICE, min_length=1, max_length=32)
     language: str = Field(default="auto", pattern=r"^(auto|[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,2})$")
     attempt_id: str | None = Field(default=None, min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    conversation_id: str | None = Field(default=None, max_length=100)
+    parent_message_id: str | None = Field(default=None, max_length=100)
+    # ``resume_handle`` is the public name used by the browser.  Keep
+    # ``session_handle`` as an input alias for clients that use the response
+    # field verbatim; both values are opaque and identity-bound server-side.
+    resume_handle: str | None = Field(default=None, max_length=256)
+    session_handle: str | None = Field(default=None, max_length=256)
 
     @field_validator("voice")
     @classmethod
@@ -44,7 +51,9 @@ class RealtimeOffer(BaseModel):
 class RealtimeTextInput(BaseModel):
     text: str = Field(min_length=1, max_length=10_000)
     conversation_id: str = Field(min_length=10, max_length=100)
-    parent_message_id: str = Field(default="", max_length=100)
+    parent_message_id: str | None = Field(default=None, max_length=100)
+    session_handle: str | None = Field(default=None, max_length=256)
+    resume_handle: str | None = Field(default=None, max_length=256)
 
 
 class RealtimeQuotaReport(BaseModel):
@@ -86,6 +95,50 @@ def _error_response(
     if attempt_id:
         payload["attempt_id"] = attempt_id
     return JSONResponse(payload, status_code=status_code, headers=headers)
+
+
+def _conversation_current_node(value: object) -> str:
+    """Extract a conversation's current node without trusting arbitrary ids."""
+    if not isinstance(value, dict):
+        return ""
+    for key in ("current_node", "currentNode"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    # A few backend deployments wrap the conversation document one level deep.
+    for key in ("conversation", "data"):
+        nested = value.get(key)
+        current = _conversation_current_node(nested)
+        if current:
+            return current
+    return ""
+
+
+def _latest_parent_message_id(value: object) -> str:
+    """Read the assistant message cursor emitted by a conversation SSE event."""
+    if not isinstance(value, dict):
+        return ""
+    for key in ("message", "item"):
+        message = value.get(key)
+        if isinstance(message, dict):
+            author = message.get("author")
+            role = author.get("role") if isinstance(author, dict) else message.get("role")
+            # Avoid moving the cursor to an input/tool item.  Some upstream
+            # events omit role, in which case the message id is still useful.
+            if role is None or str(role).strip().lower() == "assistant":
+                candidate = message.get("id") or message.get("message_id")
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+
+    for key in ("parent_message_id", "parentMessageId"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+
+    nested = value.get("v")
+    if isinstance(nested, dict):
+        return _latest_parent_message_id(nested)
+    return ""
 
 
 def create_router() -> APIRouter:
@@ -139,6 +192,9 @@ def create_router() -> APIRouter:
         identity = require_identity(authorization)
         identity_key = str(identity.get("id") or identity.get("name") or "anonymous")
         request_id = uuid.uuid4().hex
+        conversation_id = (offer.conversation_id or "").strip()
+        parent_message_id = (offer.parent_message_id or "").strip()
+        resume_handle = (offer.resume_handle or offer.session_handle or "").strip()
         retry_after = realtime_signaling_guard.check_rate_limit(identity_key)
         if retry_after:
             return _error_response(
@@ -152,14 +208,41 @@ def create_router() -> APIRouter:
         attempt_id, excluded = realtime_signaling_guard.open_attempt(identity_key, offer.attempt_id)
         access_token = ""
         try:
-            access_token = account_service.get_realtime_access_token(excluded)
+            if resume_handle:
+                # A resume is deliberately pinned to the original account so
+                # a text-primed voice conversation remains on one upstream
+                # account.  The opaque handle is checked against identity and
+                # never gives the caller access to the token itself.
+                access_token = realtime_signaling_guard.resume_session(
+                    identity_key,
+                    resume_handle,
+                    conversation_id=conversation_id,
+                ) or ""
+                if not access_token:
+                    return _error_response(
+                        status_code=404,
+                        code="realtime_session_handle_not_found",
+                        message="Realtime session handle is unknown or expired",
+                        request_id=request_id,
+                        retryable=False,
+                        attempt_id=attempt_id,
+                    )
+            else:
+                access_token = account_service.get_realtime_access_token(excluded)
             async with realtime_signaling_guard.signaling_slot():
                 realtime_signaling_guard.record_account(attempt_id, access_token)
+                exchange_kwargs = {
+                    "access_token": access_token,
+                    "offer_sdp": offer.sdp,
+                    "voice": offer.voice,
+                    "language": offer.language,
+                }
+                if conversation_id:
+                    exchange_kwargs["conversation_id"] = conversation_id
+                if parent_message_id:
+                    exchange_kwargs["parent_message_id"] = parent_message_id
                 answer_sdp, location = await exchange_realtime_sdp(
-                    access_token=access_token,
-                    offer_sdp=offer.sdp,
-                    voice=offer.voice,
-                    language=offer.language,
+                    **exchange_kwargs,
                 )
         except SignalingBusyError:
             return _error_response(
@@ -223,12 +306,25 @@ def create_router() -> APIRouter:
                 attempt_id=attempt_id,
             )
         account_service.mark_realtime_available(access_token)
+        session_handle = realtime_signaling_guard.pin_session(
+            identity_key,
+            access_token,
+            conversation_id=conversation_id,
+            session_id=resume_handle or None,
+        )
         logger.info(
             f"[realtime] Direct WebRTC session: request_id={request_id}, voice={offer.voice}, "
             f"identity={identity.get('name')}"
         )
         return JSONResponse(
-            {"sdp": answer_sdp, "location": location, "attempt_id": attempt_id, "request_id": request_id},
+            {
+                "sdp": answer_sdp,
+                "location": location,
+                "attempt_id": attempt_id,
+                "request_id": request_id,
+                "session_handle": session_handle,
+                "resume_handle": session_handle,
+            },
             headers={"X-Request-ID": request_id},
         )
 
@@ -294,36 +390,97 @@ def create_router() -> APIRouter:
         identity_key = str(identity.get("id") or identity.get("name") or "anonymous")
         request_id = uuid.uuid4().hex
 
-        access_token = realtime_signaling_guard.get_attempt_token(identity_key, attempt_id)
+        requested_handle = (body.session_handle or body.resume_handle or "").strip()
+        if requested_handle:
+            access_token = realtime_signaling_guard.get_pinned_token(
+                identity_key,
+                requested_handle,
+                conversation_id=body.conversation_id,
+                refresh=True,
+            )
+        else:
+            access_token = realtime_signaling_guard.get_attempt_token(identity_key, attempt_id)
         if not access_token:
             return _error_response(
                 status_code=404,
-                code="realtime_attempt_not_found",
-                message="Realtime attempt is unknown or expired",
+                code=("realtime_session_handle_not_found" if requested_handle else "realtime_attempt_not_found"),
+                message=(
+                    "Realtime session handle is unknown or expired"
+                    if requested_handle else "Realtime attempt is unknown or expired"
+                ),
                 request_id=request_id,
                 retryable=False,
             )
 
         from services.openai_backend_api import OpenAIBackendAPI
-        from utils.helper import new_uuid
 
         def _stream_text():
             api = OpenAIBackendAPI(access_token)
+            latest_parent_message_id = (body.parent_message_id or "").strip()
+            saw_done = False
             try:
-                from utils.helper import iter_sse_payloads
+                if not latest_parent_message_id:
+                    try:
+                        latest_parent_message_id = _conversation_current_node(
+                            api._get_conversation(body.conversation_id)
+                        )
+                    except Exception as exc:
+                        # A stale/missing conversation document should not
+                        # prevent the normal backend stream from attempting a
+                        # root parent.  Keep the failure out of the client
+                        # payload because it can contain upstream details.
+                        logger.debug(
+                            "[realtime] Could not resolve conversation current_node: %s",
+                            exc.__class__.__name__,
+                        )
                 for chunk in api.stream_conversation(
                     messages=[{"role": "user", "content": body.text}],
                     model="auto",
                     conversation_id=body.conversation_id,
-                    parent_message_id=body.parent_message_id or None,
+                    parent_message_id=latest_parent_message_id or None,
                 ):
-                    yield f"data: {chunk}\n\n"
+                    if chunk == "[DONE]":
+                        saw_done = True
+                        continue
+                    serialized = chunk
+                    try:
+                        decoded = json.loads(chunk)
+                    except (TypeError, json.JSONDecodeError):
+                        decoded = None
+                    if isinstance(decoded, dict):
+                        candidate = _latest_parent_message_id(decoded)
+                        if candidate:
+                            latest_parent_message_id = candidate
+                        # Make the cursor available on the same SSE event so
+                        # clients need not reverse-engineer each upstream shape.
+                        if latest_parent_message_id:
+                            decoded["parent_message_id"] = latest_parent_message_id
+                            serialized = json.dumps(decoded, ensure_ascii=False)
+                    yield f"data: {serialized}\n\n"
+
+                # Emit a stable terminal cursor event.  This is intentionally
+                # metadata-only: no upstream token or account detail crosses
+                # the API boundary.
+                if latest_parent_message_id:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "realtime.text.completed",
+                                "conversation_id": body.conversation_id,
+                                "parent_message_id": latest_parent_message_id,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                if saw_done:
+                    yield "data: [DONE]\n\n"
             except Exception as exc:
                 yield f"data: {json.dumps({'type': 'error', 'error': {'message': str(exc)[:200], 'code': 'internal_error'}})}\n\n"
             finally:
                 api.close()
 
-        import json
         return StreamingResponse(
             _stream_text(),
             media_type="text/event-stream",

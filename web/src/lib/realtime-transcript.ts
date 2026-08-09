@@ -11,6 +11,8 @@ export type TranscriptUpdate = {
 export type ChatTranscriptCursor = {
   role: "user" | "assistant";
   sourceId: string;
+  /** ChatGPT Web Voice's conversation message id for continuity injection. */
+  messageId?: string;
 };
 
 const ASSISTANT_DELTA_EVENTS = new Set([
@@ -174,6 +176,7 @@ export function chatTranscriptUpdateFromEvent(
     const nextCursor: ChatTranscriptCursor = {
       role: rawRole,
       sourceId: firstString(message.id) || `chat-${String(delta.c ?? "message")}`,
+      messageId: firstString(message.id) || undefined,
     };
     const parsed = transcriptUpdateFromEvent({ type: "chat.message", message });
     return {

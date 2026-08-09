@@ -3,11 +3,14 @@ export type RealtimeEvent = {
   [key: string]: unknown;
 };
 
-type ConnectOptions = {
+export type ConnectOptions = {
   authorization: string;
   voice: string;
   signalingUrl: string;
   attemptId?: string;
+  conversationId?: string;
+  parentMessageId?: string;
+  resumeHandle?: string;
 };
 
 export type RealtimeConnectionQuality = {
@@ -139,7 +142,13 @@ export class RealtimeWebRTCConnection {
 
   constructor(private readonly handlers: RealtimeWebRTCHandlers) {}
 
-  async connect(options: ConnectOptions): Promise<{ location: string; attemptId: string; requestId: string }> {
+  async connect(options: ConnectOptions): Promise<{
+    location: string;
+    attemptId: string;
+    requestId: string;
+    sessionHandle: string;
+    resumeHandle: string;
+  }> {
     this.close();
     this.closed = false;
 
@@ -239,6 +248,9 @@ export class RealtimeWebRTCConnection {
         sdp: pc.localDescription.sdp,
         voice: options.voice,
         attempt_id: options.attemptId,
+        ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
+        ...(options.parentMessageId ? { parent_message_id: options.parentMessageId } : {}),
+        ...(options.resumeHandle ? { resume_handle: options.resumeHandle } : {}),
       }),
       signal: signalingAbort.signal,
     });
@@ -249,6 +261,8 @@ export class RealtimeWebRTCConnection {
       location?: string;
       attempt_id?: string;
       request_id?: string;
+      session_handle?: string;
+      resume_handle?: string;
       detail?: string;
       error?: { message?: string; retryable?: boolean; retry_after_ms?: number };
     } = {};
@@ -286,6 +300,8 @@ export class RealtimeWebRTCConnection {
       location: result.location || "",
       attemptId,
       requestId: result.request_id || response.headers.get("X-Request-ID") || "",
+      sessionHandle: result.session_handle || result.resume_handle || "",
+      resumeHandle: result.resume_handle || result.session_handle || "",
     };
   }
 

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Menu } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
+import { BrandMark } from "@/components/brand-mark";
 import { HeaderActions } from "@/components/header-actions";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -135,13 +136,16 @@ export function TopNav() {
         <div className="flex min-h-12 flex-col gap-1 px-3 py-2 sm:h-12 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-6 sm:py-0">
           <div className="flex items-center justify-between gap-2 sm:justify-start sm:gap-3">
             <Sheet>
-              <SheetTrigger className="inline-flex size-8 items-center justify-center text-stone-700 transition hover:text-stone-950 sm:hidden dark:text-stone-200 dark:hover:text-white">
-                <Menu className="size-4" />
+              <SheetTrigger className="inline-flex size-10 items-center justify-center rounded-xl text-stone-700 transition-colors duration-200 hover:bg-stone-100 hover:text-stone-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-400 sm:hidden dark:text-stone-200 dark:hover:bg-white/10 dark:hover:text-white">
+                <Menu className="size-5" />
                 <span className="sr-only">打开导航</span>
               </SheetTrigger>
               <SheetContent side="left">
                 <SheetHeader>
-                  <SheetTitle>chatgpt2api</SheetTitle>
+                  <SheetTitle className="flex items-center gap-2">
+                    <BrandMark className="size-6" />
+                    <span>gpt2api</span>
+                  </SheetTitle>
                   <span className="text-xs text-stone-500 dark:text-stone-400">{roleLabel} · {displayName}</span>
                 </SheetHeader>
                 <nav className="mt-8 flex flex-col gap-1">
@@ -182,11 +186,12 @@ export function TopNav() {
             </Sheet>
             <Link
               href="/image"
-              className="shrink-0 py-1 text-[15px] font-bold tracking-tight text-stone-950 transition hover:text-stone-700 dark:text-stone-50 dark:hover:text-white"
+              className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-xl py-1 pr-2 text-[15px] font-bold tracking-tight text-stone-950 transition-colors duration-200 hover:bg-stone-100 hover:text-stone-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-400 dark:text-stone-50 dark:hover:bg-white/10 dark:hover:text-white"
             >
-              chatgpt2api
+              <BrandMark className="size-6" />
+              <span>gpt2api</span>
             </Link>
-            <HeaderActions className="ml-auto sm:hidden" showGithubText={false} />
+            <HeaderActions className="ml-auto sm:hidden" />
           </div>
           <nav className="hide-scrollbar -mx-1 hidden min-w-0 flex-1 gap-1 overflow-x-auto px-1 sm:mx-0 sm:flex sm:justify-center sm:gap-8 sm:overflow-visible sm:px-0">
             {canvasHref ? (

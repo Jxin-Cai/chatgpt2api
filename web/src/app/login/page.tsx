@@ -2,9 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { LoaderCircle, LockKeyhole } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 
+import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -59,9 +60,10 @@ export default function LoginPage() {
         <CardContent className="space-y-7 p-6 sm:p-8">
           <div className="space-y-4 text-center">
             <div className="mx-auto inline-flex size-14 items-center justify-center rounded-[18px] bg-stone-950 text-white shadow-sm">
-              <LockKeyhole className="size-5" />
+              <BrandMark className="size-10" />
             </div>
             <div className="space-y-2">
+              <div className="text-sm font-semibold tracking-[0.16em] text-stone-600 dark:text-stone-300">gpt2api</div>
               <h1 className="text-3xl font-semibold tracking-tight text-stone-950">欢迎回来</h1>
               <p className="text-sm leading-6 text-stone-500">输入密钥后继续使用账号管理和图片生成功能。</p>
             </div>

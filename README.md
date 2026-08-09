@@ -386,6 +386,7 @@ Base64 转码，因此延迟和抖动更低。
 | `CHATGPT2API_REALTIME_SIGNALING_RATE_PER_MINUTE` | `20` | 单个身份每分钟最多创建的信令请求 |
 | `CHATGPT2API_REALTIME_SIGNALING_CONCURRENCY` | `8` | 全局并发 SDP 交换数 |
 | `CHATGPT2API_REALTIME_ATTEMPT_TTL_SECONDS` | `300` | 账号重试链的保留时间 |
+| `CHATGPT2API_REALTIME_SESSION_TTL_SECONDS` | `7200` | 同账号 resume/session handle 的有效期 |
 | `CHATGPT2API_REALTIME_QUOTA_COOLDOWN_SECONDS` | `3600` | DataChannel 确认语音额度耗尽后，暂停选择该账号的时间 |
 
 #### 查询能力和声音
@@ -407,6 +408,9 @@ ICE 失败和页面卸载时的资源释放。
 const baseUrl = "http://localhost:8000";
 const apiKey = "<auth-key>";
 let previousAttemptId = "";
+let resumeHandle = "";
+let conversationId = "";
+let parentMessageId = "";
 
 const pc = new RTCPeerConnection();
 const remoteAudio = new Audio();
@@ -491,6 +495,10 @@ const response = await fetch(`${baseUrl}/v1/realtime/sessions`, {
     language: "auto",
     // 额度重试时传回上一次响应中的 attempt_id，避免再次选择同一账号。
     attempt_id: previousAttemptId || undefined,
+    // 继续已有 Web Voice 对话时传入这些字段；空值应省略。
+    conversation_id: conversationId || undefined,
+    parent_message_id: parentMessageId || undefined,
+    resume_handle: resumeHandle || undefined,
   }),
 });
 
@@ -500,6 +508,7 @@ if (!response.ok) {
   throw new Error(answer.error?.message || `signaling failed: ${response.status}`);
 }
 previousAttemptId = answer.attempt_id;
+resumeHandle = answer.resume_handle || answer.session_handle || "";
 const answerSdp = `${answer.sdp.trim().replace(/\r?\n/g, "\r\n")}\r\n`;
 await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 ```
@@ -511,26 +520,47 @@ PeerConnection，并把 `attempt_id` 放入下一次请求；服务端会在这�
 项目自带调试页会把 `cap_reached` 回报给服务端，使耗尽账号进入临时冷却，后续新
 会话也不会继续命中该账号。
 
-文字消息也通过 DataChannel 发送，并使用双层 `data_message` 封装：
+成功响应同时返回不透明的 `session_handle`/`resume_handle`。它只在签发它的 API
+Key 身份下有效，服务端仅在内存中保存上游账号绑定，绝不会把上游 Token 返回给
+客户端。文字注入完成后，客户端可以把同一个 `resume_handle` 与
+`conversation_id`、最新的 `parent_message_id` 一起用于下一次 SDP 请求，以便
+在同一账号上恢复语音上下文；`attempt_id` 仍只用于额度重试时的账号排除。
+
+文字注入端点为 `POST /v1/realtime/sessions/{attempt_id}/text`，请求体包含
+`text`、`conversation_id`，以及可选的 `parent_message_id` 和 `resume_handle`
+（服务端兼容 `session_handle` 别名）。
+省略 parent 时服务端会读取对话的 `current_node`，并在 SSE 事件中返回最新的
+`parent_message_id`（包括终止事件 `realtime.text.completed`）。
+
+不要把文字控制消息当作通用 Realtime DataChannel 命令发送。当前 Web Voice
+实现的文字入口是 HTTP SSE 端点 `/v1/realtime/sessions/{attempt_id}/text`，它会
+沿用同一个 ChatGPT conversation，并返回 assistant 消息和最新的
+`parent_message_id`：
 
 ```js
-function sendRealtimeEvent(event) {
-  dc.send(JSON.stringify({
-    type: "data_message",
-    data: JSON.stringify(event),
-  }));
-}
-
-sendRealtimeEvent({
-  type: "conversation.item.create",
-  item: {
-    type: "message",
-    role: "user",
-    content: [{ type: "input_text", text: "你好" }],
+const textResponse = await fetch(
+  `${baseUrl}/v1/realtime/sessions/${encodeURIComponent(previousAttemptId)}/text`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      text: "你好",
+      conversation_id: conversationId,
+      parent_message_id: parentMessageId || undefined,
+      resume_handle: resumeHandle || undefined,
+    }),
   },
-});
-sendRealtimeEvent({ type: "response.create" });
+);
 ```
+
+消费 SSE 时保存事件中的 `parent_message_id`。文字注入完成后，关闭旧的
+`PeerConnection` 并重新执行上面的 SDP 协商；重连请求必须同时带上同一个
+`resume_handle`、`conversation_id` 和最新的 `parent_message_id`。这样服务端会
+复用原来绑定的上游账号和 conversation 上下文；额度重试则清空这些续接字段，
+只保留 `attempt_id` 来选择下一个账号。
 
 客户端应关注以下事件类别：
 

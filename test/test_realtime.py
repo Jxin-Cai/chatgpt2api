@@ -5,12 +5,30 @@ import time
 from av import AudioFrame, AudioResampler
 
 from services.realtime.audio_track import BufferedAudioStreamTrack, FRAME_BYTES
+from services.realtime.chatgpt_webrtc import build_session_config
 from services.realtime.session import decode_data_channel_message, quota_error_from_message
 from services.realtime.session import (
     RealtimeQuotaExceeded,
     RealtimeSession,
     resample_to_pcm16_mono,
 )
+
+
+def test_build_session_config_omits_conversation_continuity_when_not_provided():
+    config = build_session_config()
+
+    assert "conversation_id" not in config
+    assert "parent_message_id" not in config
+
+
+def test_build_session_config_includes_conversation_continuity_when_provided():
+    config = build_session_config(
+        conversation_id="conversation-123",
+        parent_message_id="parent-456",
+    )
+
+    assert config["conversation_id"] == "conversation-123"
+    assert config["parent_message_id"] == "parent-456"
 
 
 def test_audio_track_paces_buffered_frames_in_realtime():

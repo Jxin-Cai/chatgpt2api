@@ -24,8 +24,19 @@ REALTIME_VOICES: tuple[dict[str, str], ...] = (
 REALTIME_VOICE_IDS = frozenset(voice["id"] for voice in REALTIME_VOICES)
 
 
-def build_session_config(voice: str = REALTIME_DEFAULT_VOICE, language: str = "auto") -> dict[str, Any]:
-    return {
+def build_session_config(
+    voice: str = REALTIME_DEFAULT_VOICE,
+    language: str = "auto",
+    conversation_id: str | None = None,
+    parent_message_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the Web Voice session payload.
+
+    Conversation continuity is intentionally represented at the top level,
+    matching the web client's realtime contract.  Empty values are omitted so
+    a new voice session keeps the upstream default conversation bootstrap.
+    """
+    config: dict[str, Any] = {
         "backend_reasoning_effort": "instant",
         "language_code": language,
         "requested_default_model": "",
@@ -43,6 +54,11 @@ def build_session_config(voice: str = REALTIME_DEFAULT_VOICE, language: str = "a
         "chat_mode": "chat",
         "enable_message_streaming": True,
     }
+    if conversation_id:
+        config["conversation_id"] = conversation_id
+    if parent_message_id:
+        config["parent_message_id"] = parent_message_id
+    return config
 
 
 def build_realtime_headers(access_token: str) -> dict[str, str]:
@@ -69,13 +85,20 @@ async def exchange_realtime_sdp(
     offer_sdp: str,
     voice: str = "ember",
     language: str = "auto",
+    conversation_id: str | None = None,
+    parent_message_id: str | None = None,
 ) -> tuple[str, str]:
     """将浏览器或 aiortc 的 SDP offer 代理给 ChatGPT，返回 answer 和位置。"""
     import asyncio
     from curl_cffi import CurlMime
     from curl_cffi import requests as cffi_requests
 
-    session_cfg = build_session_config(voice=voice, language=language)
+    session_cfg = build_session_config(
+        voice=voice,
+        language=language,
+        conversation_id=conversation_id,
+        parent_message_id=parent_message_id,
+    )
     mime = CurlMime()
     mime.addpart(name="sdp", data=offer_sdp.encode())
     mime.addpart(
