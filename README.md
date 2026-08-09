@@ -556,11 +556,11 @@ const textResponse = await fetch(
 );
 ```
 
-消费 SSE 时保存事件中的 `parent_message_id`。文字注入完成后，关闭旧的
-`PeerConnection` 并重新执行上面的 SDP 协商；重连请求必须同时带上同一个
-`resume_handle`、`conversation_id` 和最新的 `parent_message_id`。这样服务端会
-复用原来绑定的上游账号和 conversation 上下文；额度重试则清空这些续接字段，
-只保留 `attempt_id` 来选择下一个账号。
+消费 SSE 时保存事件中的 `parent_message_id`。文字注入完成后通常继续使用现有的
+`PeerConnection`，不需要重新执行 SDP 协商；只有网络中断或客户端明确要求重连时，
+才应同时带上同一个 `resume_handle`、`conversation_id` 和最新的
+`parent_message_id`。这样服务端会复用原来绑定的上游账号和 conversation 上下文；
+额度重试则清空这些续接字段，只保留 `attempt_id` 来选择下一个账号。
 
 客户端应关注以下事件类别：
 

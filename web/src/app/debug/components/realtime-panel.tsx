@@ -567,11 +567,6 @@ export function RealtimePanel() {
       setTextApplying(false);
       setPhase(micActiveRef.current ? "listening" : "muted");
       setStatusDetail(PHASE_COPY[micActiveRef.current ? "listening" : "muted"].detail);
-      // Text injection updates the same conversation server-side. Reopen the
-      // media session with its pinned account and latest cursor.
-      if (resumeHandleRef.current && !disconnectRequestedRef.current) {
-        void connectRef.current(false, true);
-      }
     } catch (err) {
       addLog("error", `text inject error: ${err instanceof Error ? err.message : String(err)}`);
       setPhase(micActiveRef.current ? "listening" : "muted");
