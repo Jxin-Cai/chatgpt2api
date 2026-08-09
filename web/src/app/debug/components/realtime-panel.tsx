@@ -155,6 +155,7 @@ export function RealtimePanel() {
   const resumeHandleRef = useRef("");
   const conversationIdRef = useRef("");
   const parentMessageIdRef = useRef("");
+  const relayUserMessageIdRef = useRef("");
   const connectRef = useRef<(retry?: boolean, preserveSession?: boolean) => Promise<void>>(async () => {});
   const logIdRef = useRef(0);
   const transcriptIdRef = useRef(0);
@@ -373,7 +374,11 @@ export function RealtimePanel() {
       parentMessageIdRef.current = chatDelta.cursor.messageId;
     }
     const transcriptUpdate = chatDelta?.update || transcriptUpdateFromEvent(data);
-    if (transcriptUpdate) applyTranscriptUpdate(transcriptUpdate);
+    const isOptimisticRelayUser = chatDelta?.cursor?.role === "user"
+      && !!chatDelta.cursor.messageId
+      && chatDelta.cursor.messageId === relayUserMessageIdRef.current;
+    if (transcriptUpdate && !isOptimisticRelayUser) applyTranscriptUpdate(transcriptUpdate);
+    if (chatDelta?.cursor?.role === "assistant") setTextApplying(false);
 
     if (type === "input_audio_buffer.speech_started") {
       startTurn("user");
@@ -461,115 +466,27 @@ export function RealtimePanel() {
   const sendTextMessage = useCallback(async (text: string) => {
     const normalized = text.trim();
     if (!realtimeRef.current || !normalized) return;
-    const attemptId = attemptIdRef.current;
-    const conversationId = conversationIdRef.current;
-    const sessionHandle = resumeHandleRef.current;
-
-    applyTranscriptUpdate({
-      role: "user",
-      text: normalized,
-      mode: "replace",
-      final: true,
-      sourceId: startTurn("user"),
-    });
     setPhase("thinking");
     setStatusDetail(PHASE_COPY.thinking.detail);
     setTextApplying(true);
-    addLog("send", `text: ${normalized.substring(0, 60)}`);
-    setTextInput("");
-
-    if (!conversationId || !attemptId) {
-      addLog("info", "无 conversation_id，文本无法发送");
-      setPhase(micActiveRef.current ? "listening" : "muted");
-      setStatusDetail("语音会话尚未就绪，请稍后重试");
-      setTextApplying(false);
-      return;
-    }
-
-    const session = await getStoredAuthSession();
-    if (!session) {
-      setTextApplying(false);
-      return;
-    }
-    const signalingBase = webConfig.apiUrl
-      ? new URL("/v1/realtime/sessions", webConfig.apiUrl).toString()
-      : "/v1/realtime/sessions";
     try {
-      const response = await fetch(`${signalingBase}/${encodeURIComponent(attemptId)}/text`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text: normalized,
-          conversation_id: conversationId,
-          parent_message_id: parentMessageIdRef.current || undefined,
-          resume_handle: sessionHandle || undefined,
-        }),
+      const messageId = realtimeRef.current.sendTextMessage(normalized);
+      parentMessageIdRef.current = messageId;
+      relayUserMessageIdRef.current = messageId;
+      applyTranscriptUpdate({
+        role: "user",
+        text: normalized,
+        mode: "replace",
+        final: true,
+        sourceId: startTurn("user"),
       });
-      if (!response.ok) {
-        const errText = await response.text();
-        addLog("error", `text inject failed: HTTP ${response.status} ${errText.substring(0, 100)}`);
-        setPhase(micActiveRef.current ? "listening" : "muted");
-        setStatusDetail("文字发送失败，请重试");
-        setTextApplying(false);
-        return;
-      }
-      const reader = response.body?.getReader();
-      if (!reader) {
-        setTextApplying(false);
-        return;
-      }
-      const decoder = new TextDecoder();
-      let assistantText = "";
-      const sourceId = startTurn("assistant");
-      setPhase("speaking");
-      setStatusDetail(PHASE_COPY.speaking.detail);
-
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const raw = line.slice(6);
-          if (raw === "[DONE]") continue;
-          try {
-            const payload = JSON.parse(raw);
-            const latestParent = typeof payload?.message?.id === "string"
-              ? payload.message.id
-              : typeof payload?.parent_message_id === "string"
-                ? payload.parent_message_id
-                : "";
-            if (latestParent) parentMessageIdRef.current = latestParent;
-            const message = payload?.message;
-            if (message?.author?.role === "assistant" && message?.content?.parts) {
-              const newText = message.content.parts.join("");
-              if (newText && newText !== assistantText) {
-                assistantText = newText;
-                applyTranscriptUpdate({ role: "assistant", text: assistantText, mode: "replace", final: false, sourceId });
-              }
-              if (message.id) parentMessageIdRef.current = message.id;
-            }
-            if (payload?.type === "error") {
-              addLog("error", `text response error: ${JSON.stringify(payload.error).substring(0, 120)}`);
-            }
-          } catch { /* skip non-json lines */ }
-        }
-      }
-      if (assistantText) {
-        applyTranscriptUpdate({ role: "assistant", text: assistantText, mode: "replace", final: true, sourceId });
-      }
+      addLog("send", `relay_message: ${normalized.substring(0, 60)}`);
+      setTextInput("");
       setTextApplying(false);
-      setPhase(micActiveRef.current ? "listening" : "muted");
-      setStatusDetail(PHASE_COPY[micActiveRef.current ? "listening" : "muted"].detail);
     } catch (err) {
-      addLog("error", `text inject error: ${err instanceof Error ? err.message : String(err)}`);
+      addLog("error", `relay_message failed: ${err instanceof Error ? err.message : String(err)}`);
       setPhase(micActiveRef.current ? "listening" : "muted");
+      setStatusDetail("文字发送失败，请重试");
       setTextApplying(false);
     }
   }, [addLog, applyTranscriptUpdate, startTurn]);

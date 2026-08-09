@@ -532,10 +532,37 @@ Key 身份下有效，服务端仅在内存中保存上游账号绑定，绝不�
 省略 parent 时服务端会读取对话的 `current_node`，并在 SSE 事件中返回最新的
 `parent_message_id`（包括终止事件 `realtime.text.completed`）。
 
-不要把文字控制消息当作通用 Realtime DataChannel 命令发送。当前 Web Voice
-实现的文字入口是 HTTP SSE 端点 `/v1/realtime/sessions/{attempt_id}/text`，它会
-沿用同一个 ChatGPT conversation，并返回 assistant 消息和最新的
-`parent_message_id`：
+在已经建立的实时通话中，文字输入应通过现有 WebRTC DataChannel 发送
+`relay_message`。它会沿用当前语音会话，返回同一条 `chat_message_delta`、
+`state_update` 和远端音频事件；发送后保持现有 PeerConnection，不需要重新执行
+SDP 协商。客户端应保存生成的消息 `id` 作为最新的 `parent_message_id`，并继续让
+入站事件渲染 assistant 文本和音频：
+
+```js
+const messageId = crypto.randomUUID();
+dataChannel.send(JSON.stringify({
+  type: "data_message",
+  data: JSON.stringify({
+    type: "relay_message",
+    payload: {
+      type: "relay_message",
+      message: {
+        id: messageId,
+        author: { role: "user" },
+        create_time: Date.now() / 1000,
+        content: { content_type: "text", parts: ["你好"] },
+        metadata: { serialization_metadata: { custom_symbol_offsets: [] } },
+        clientMetadata: { isOptimistic: true },
+      },
+    },
+  }),
+}));
+parentMessageId = messageId;
+```
+
+HTTP SSE 端点 `/v1/realtime/sessions/{attempt_id}/text` 仍保留为兼容接口，适合
+没有活动 DataChannel 的客户端或通话外的文字注入。它会沿用同一个 ChatGPT
+conversation，并返回 assistant 消息和最新的 `parent_message_id`：
 
 ```js
 const textResponse = await fetch(

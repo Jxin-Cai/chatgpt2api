@@ -335,6 +335,28 @@ export class RealtimeWebRTCConnection {
     this.sendWrapped(event);
   }
 
+  sendTextMessage(text: string): string {
+    if (!text.trim()) throw new Error("文字消息不能为空");
+    if (this.dataChannel?.readyState !== "open") throw new Error("实时事件通道未连接");
+
+    const messageId = crypto.randomUUID();
+    this.sendWrapped({
+      type: "relay_message",
+      payload: {
+        type: "relay_message",
+        message: {
+          id: messageId,
+          author: { role: "user" },
+          create_time: Date.now() / 1000,
+          content: { content_type: "text", parts: [text] },
+          metadata: { serialization_metadata: { custom_symbol_offsets: [] } },
+          clientMetadata: { isOptimistic: true },
+        },
+      },
+    });
+    return messageId;
+  }
+
   setMicrophoneEnabled(enabled: boolean): void {
     this.microphone?.getAudioTracks().forEach((track) => {
       track.enabled = enabled;
