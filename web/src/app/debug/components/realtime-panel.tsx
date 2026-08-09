@@ -78,7 +78,7 @@ function timestamp() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false, fractionalSecondDigits: 2 });
 }
 
-function rmsLevel(analyser: AnalyserNode | null, samples: Uint8Array): number {
+function rmsLevel(analyser: AnalyserNode | null, samples: Uint8Array<ArrayBuffer>): number {
   if (!analyser) return 0;
   analyser.getByteTimeDomainData(samples);
   let sum = 0;

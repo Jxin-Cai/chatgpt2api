@@ -743,6 +743,7 @@
 .chat-conversation__scroll {
   scrollbar-color: rgb(148 163 184 / 0.32) transparent;
   scrollbar-width: thin;
+  overflow-anchor: none;
 }
 
 .chat-message {
@@ -926,6 +927,17 @@
   backdrop-filter: blur(18px);
 }
 
+.chat-latest-reply-wrap {
+  display: flex;
+  justify-content: center;
+  padding-bottom: 10px;
+}
+
+.chat-latest-reply {
+  min-height: 44px;
+  min-width: 44px;
+}
+
 .chat-composer-shell {
   border: 1px solid rgb(255 255 255 / 0.12);
   border-radius: 18px;
@@ -990,7 +1002,8 @@
   }
 
   .chat-composer-shell,
-  .chat-composer-shell * {
+  .chat-composer-shell *,
+  .chat-latest-reply {
     transition: none;
   }
 }

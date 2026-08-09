@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BrainCircuit, ChevronDown, Download, ImagePlus, LoaderCircle, MessageSquareText, RotateCcw, Send, Sparkles, Square, X } from "lucide-react";
+import { ArrowDown, BrainCircuit, ChevronDown, Download, ImagePlus, LoaderCircle, MessageSquareText, RotateCcw, Send, Sparkles, Square, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ type SelectedImage = {
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_CHAT_INPUT = "你好，先记住我的项目叫 chatgpt2api。";
+const CHAT_SCROLL_NEAR_BOTTOM_PX = 96;
 
 const SUGGESTIONS = [
   "总结一下这个项目的定位",
@@ -226,7 +227,17 @@ export function ChatPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [streamTelemetry, setStreamTelemetry] = useState<StreamTelemetry>(INITIAL_STREAM_TELEMETRY);
-  const conversationEndRef = useRef<HTMLDivElement | null>(null);
+  const conversationScrollRef = useRef<HTMLDivElement | null>(null);
+  const scrollFollowRef = useRef(true);
+  const scrollProgrammaticRef = useRef(false);
+  const scrollProgrammaticTimerRef = useRef<number | null>(null);
+  const scrollAdjustmentFrameRef = useRef<number | null>(null);
+  const scrollAdjustmentRef = useRef<{
+    mode: "bottom" | "preserve";
+    top: number | null;
+    behavior: "auto" | "smooth";
+  } | null>(null);
+  const preserveScrollTopRef = useRef<number | null>(null);
   const sendingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamUiRef = useRef<StreamUiState | null>(null);
@@ -238,18 +249,130 @@ export function ChatPanel() {
   const [inputEdited, setInputEdited] = useState(false);
   const [sessionMemoryStatus, setSessionMemoryStatus] = useState<SessionMemoryStatus>("restoring");
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false);
+  const [showScrollPrompt, setShowScrollPrompt] = useState(false);
 
-  const scrollToLatest = useCallback(() => {
-    window.requestAnimationFrame(() => {
-      const reduceMotion = typeof window.matchMedia === "function"
-        && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      conversationEndRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "end" });
-    });
+  const isNearConversationBottom = useCallback((element: HTMLDivElement | null = conversationScrollRef.current) => {
+    if (!element) return true;
+    return element.scrollHeight - element.scrollTop - element.clientHeight <= CHAT_SCROLL_NEAR_BOTTOM_PX;
   }, []);
 
+  const clearProgrammaticScrollGuard = useCallback(() => {
+    scrollProgrammaticRef.current = false;
+    if (scrollProgrammaticTimerRef.current !== null) {
+      window.clearTimeout(scrollProgrammaticTimerRef.current);
+      scrollProgrammaticTimerRef.current = null;
+    }
+  }, []);
+
+  const armProgrammaticScrollGuard = useCallback((durationMs: number) => {
+    scrollProgrammaticRef.current = true;
+    if (scrollProgrammaticTimerRef.current !== null) {
+      window.clearTimeout(scrollProgrammaticTimerRef.current);
+    }
+    scrollProgrammaticTimerRef.current = window.setTimeout(() => {
+      scrollProgrammaticTimerRef.current = null;
+      scrollProgrammaticRef.current = false;
+      const element = conversationScrollRef.current;
+      if (element && isNearConversationBottom(element)) {
+        scrollFollowRef.current = true;
+        setShowScrollPrompt(false);
+      }
+    }, Math.max(0, durationMs));
+  }, [isNearConversationBottom]);
+
+  const scheduleScrollAdjustment = useCallback((
+    mode: "bottom" | "preserve",
+    top: number | null = null,
+    behavior: "auto" | "smooth" = "auto",
+  ) => {
+    scrollAdjustmentRef.current = { mode, top, behavior };
+    if (scrollAdjustmentFrameRef.current !== null) return;
+    scrollAdjustmentFrameRef.current = window.requestAnimationFrame(() => {
+      scrollAdjustmentFrameRef.current = null;
+      const adjustment = scrollAdjustmentRef.current;
+      scrollAdjustmentRef.current = null;
+      const element = conversationScrollRef.current;
+      if (!element || !adjustment) return;
+
+      if (adjustment.mode === "bottom") {
+        // A user can scroll away between the state update and this frame. Never
+        // steal that newly chosen position while rendering stream output.
+        if (!scrollFollowRef.current) return;
+        armProgrammaticScrollGuard(adjustment.behavior === "smooth" ? 900 : 120);
+        if (typeof element.scrollTo === "function") {
+          element.scrollTo({ top: element.scrollHeight, behavior: adjustment.behavior });
+        } else {
+          element.scrollTop = element.scrollHeight;
+        }
+        return;
+      }
+
+      if (scrollFollowRef.current || adjustment.top === null) return;
+      armProgrammaticScrollGuard(120);
+      element.scrollTop = adjustment.top;
+      preserveScrollTopRef.current = null;
+    });
+  }, [armProgrammaticScrollGuard]);
+
+  const scrollToLatest = useCallback(() => {
+    scrollFollowRef.current = true;
+    preserveScrollTopRef.current = null;
+    setShowScrollPrompt(false);
+    const reduceMotion = typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    scheduleScrollAdjustment("bottom", null, reduceMotion ? "auto" : "smooth");
+  }, [scheduleScrollAdjustment]);
+
+  const updateConversationFollow = useCallback(() => {
+    const element = conversationScrollRef.current;
+    if (!element) return;
+    if (scrollProgrammaticRef.current) {
+      // Smooth/programmatic events are expected while a requested scroll is in
+      // flight. Only treat the request as settled once it reaches the target.
+      if (isNearConversationBottom(element)) {
+        clearProgrammaticScrollGuard();
+        scrollFollowRef.current = true;
+        setShowScrollPrompt(false);
+      }
+      return;
+    }
+
+    const nearBottom = isNearConversationBottom(element);
+    scrollFollowRef.current = nearBottom;
+    setShowScrollPrompt(!nearBottom);
+  }, [clearProgrammaticScrollGuard, isNearConversationBottom]);
+
   useEffect(() => {
-    scrollToLatest();
-  }, [loading, messages.length, scrollToLatest]);
+    const element = conversationScrollRef.current;
+    if (!element) return;
+    const handleScroll = () => updateConversationFollow();
+    const cancelProgrammaticOnInput = () => {
+      if (!scrollProgrammaticRef.current) return;
+      clearProgrammaticScrollGuard();
+      updateConversationFollow();
+    };
+    element.addEventListener("scroll", handleScroll, { passive: true });
+    element.addEventListener("wheel", cancelProgrammaticOnInput, { passive: true });
+    element.addEventListener("pointerdown", cancelProgrammaticOnInput, { passive: true });
+    element.addEventListener("touchstart", cancelProgrammaticOnInput, { passive: true });
+    handleScroll();
+    return () => {
+      element.removeEventListener("scroll", handleScroll);
+      element.removeEventListener("wheel", cancelProgrammaticOnInput);
+      element.removeEventListener("pointerdown", cancelProgrammaticOnInput);
+      element.removeEventListener("touchstart", cancelProgrammaticOnInput);
+    };
+  }, [clearProgrammaticScrollGuard, updateConversationFollow]);
+
+  useEffect(() => {
+    if (!sessionHydrated) return;
+    // Hydration is the one initial positioning operation: use an immediate
+    // bottom jump so restored sessions do not animate through old messages.
+    scrollFollowRef.current = true;
+    preserveScrollTopRef.current = null;
+    setShowScrollPrompt(false);
+    scheduleScrollAdjustment("bottom", null, "auto");
+  }, [scheduleScrollAdjustment, sessionHydrated]);
 
   useEffect(() => {
     if (sessionHydratedRef.current) return;
@@ -295,6 +418,16 @@ export function ChatPanel() {
     streamFlushFrameRef.current = 0;
     const stream = streamUiRef.current;
     if (!stream) return;
+    const element = conversationScrollRef.current;
+    const nearBottom = isNearConversationBottom(element);
+    if (nearBottom) {
+      scrollFollowRef.current = true;
+      setShowScrollPrompt(false);
+    } else {
+      scrollFollowRef.current = false;
+      preserveScrollTopRef.current = element?.scrollTop ?? null;
+      setShowScrollPrompt(true);
+    }
     setMessages((current) => {
       const currentMessage = current[stream.assistantIndex];
       if (!currentMessage || currentMessage.role !== "assistant") return current;
@@ -309,8 +442,12 @@ export function ChatPanel() {
       elapsedMs: stream.elapsedMs,
       finishReason: stream.finishReason,
     });
-    scrollToLatest();
-  }, [scrollToLatest]);
+    if (scrollFollowRef.current) {
+      scheduleScrollAdjustment("bottom");
+    } else {
+      scheduleScrollAdjustment("preserve", preserveScrollTopRef.current);
+    }
+  }, [isNearConversationBottom, scheduleScrollAdjustment]);
 
   const scheduleStreamUi = useCallback(() => {
     if (streamFlushFrameRef.current) return;
@@ -327,6 +464,16 @@ export function ChatPanel() {
 
   useEffect(() => () => {
     if (streamFlushFrameRef.current) window.cancelAnimationFrame(streamFlushFrameRef.current);
+    if (scrollAdjustmentFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollAdjustmentFrameRef.current);
+      scrollAdjustmentFrameRef.current = null;
+    }
+    scrollAdjustmentRef.current = null;
+    preserveScrollTopRef.current = null;
+    if (scrollProgrammaticTimerRef.current !== null) {
+      window.clearTimeout(scrollProgrammaticTimerRef.current);
+      scrollProgrammaticTimerRef.current = null;
+    }
     abortControllerRef.current?.abort();
   }, []);
 
@@ -350,6 +497,12 @@ export function ChatPanel() {
   }: StreamRunOptions) => {
     if (loading || sendingRef.current) return;
     sendingRef.current = true;
+    // A new request intentionally resumes live-follow so the empty assistant
+    // placeholder and the first tokens are visible without a manual jump.
+    clearProgrammaticScrollGuard();
+    scrollFollowRef.current = true;
+    preserveScrollTopRef.current = null;
+    setShowScrollPrompt(false);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const startedAt = performance.now();
@@ -363,6 +516,7 @@ export function ChatPanel() {
     };
     streamUiRef.current = stream;
     setMessages(displayMessages);
+    scheduleScrollAdjustment("bottom");
     if (clearComposer) {
       setInput("");
       setInputEdited(false);
@@ -533,6 +687,10 @@ export function ChatPanel() {
     setRaw(null);
     setStreamTelemetry(INITIAL_STREAM_TELEMETRY);
     streamUiRef.current = null;
+    clearProgrammaticScrollGuard();
+    scrollFollowRef.current = true;
+    preserveScrollTopRef.current = null;
+    setShowScrollPrompt(false);
     setError("");
     setInput(DEFAULT_CHAT_INPUT);
     setInputEdited(false);
@@ -722,7 +880,7 @@ export function ChatPanel() {
           </div>
         </header>
 
-        <div className="chat-conversation__scroll min-h-0 flex-1 overflow-y-auto px-5 py-6 md:px-8">
+        <div ref={conversationScrollRef} className="chat-conversation__scroll min-h-0 flex-1 overflow-y-auto px-5 py-6 md:px-8">
           {messages.length ? (
             <div className="mx-auto flex w-full max-w-3xl flex-col gap-7">
               {messages.map((message, index) => {
@@ -831,10 +989,29 @@ export function ChatPanel() {
               </div>
             ) : null}
           </div>
-          <div ref={conversationEndRef} aria-hidden="true" />
         </div>
 
+        {showScrollPrompt ? (
+          <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+            有新的回复内容，已暂停自动滚动。点击“返回最新回复”查看。
+          </div>
+        ) : null}
+
         <div className="chat-composer-wrap sticky bottom-0 z-20 border-t border-white/10 px-4 py-4 md:px-8 md:py-5">
+          {showScrollPrompt ? (
+            <div className="chat-latest-reply-wrap mx-auto w-full max-w-3xl">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={scrollToLatest}
+                className="chat-latest-reply min-h-11 min-w-11 cursor-pointer rounded-full border-cyan-200/25 bg-cyan-300/[0.09] px-4 text-xs text-cyan-50 shadow-[0_10px_30px_rgba(34,211,238,0.12)] transition-colors duration-200 hover:border-cyan-200/50 hover:bg-cyan-300/[0.16] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/75"
+                aria-label="返回最新回复"
+              >
+                <ArrowDown className="size-4" aria-hidden="true" />
+                <span className="ml-2">返回最新回复</span>
+              </Button>
+            </div>
+          ) : null}
           <form
             onSubmit={(event) => {
               event.preventDefault();
