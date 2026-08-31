@@ -57,6 +57,21 @@ class _AttemptChain:
 
 
 @dataclass
+class _ClientSecret:
+    """OpenAI GA 风格的短时效 ephemeral key（``ek_...``）。
+
+    在 ``POST /v1/realtime/client_secrets`` 时签发，随后由
+    ``POST /v1/realtime/calls`` 兑换。密钥绑定签发身份与会话配置，
+    到期自动失效；上游账号 Token 不会进入该结构。
+    """
+
+    identity_key: str
+    identity: dict
+    expires_at: float
+    session_options: dict = field(default_factory=dict)
+
+
+@dataclass
 class _PinnedSession:
     """Opaque browser session binding used for short reconnects.
 
@@ -105,11 +120,18 @@ class RealtimeSignalingGuard:
         self.quota_cooldown_seconds = _positive_int(
             "CHATGPT2API_REALTIME_QUOTA_COOLDOWN_SECONDS", 86400
         )
+        self.client_secret_default_ttl_seconds = _positive_int(
+            "CHATGPT2API_REALTIME_CLIENT_SECRET_TTL_SECONDS", 600
+        )
+        self.client_secret_max_ttl_seconds = _positive_int(
+            "CHATGPT2API_REALTIME_CLIENT_SECRET_MAX_TTL_SECONDS", 7200
+        )
         self._semaphore = asyncio.Semaphore(self.max_concurrency)
         self._lock = threading.Lock()
         self._rate_events: dict[str, deque[float]] = {}
         self._attempts: dict[str, _AttemptChain] = {}
         self._pinned_sessions: dict[str, _PinnedSession] = {}
+        self._client_secrets: dict[str, _ClientSecret] = {}
         self._quota_cooldowns: dict[str, float] = {}
 
     def check_rate_limit(self, identity_key: str, now: float | None = None) -> int:
@@ -199,6 +221,58 @@ class RealtimeSignalingGuard:
             ):
                 return None
             return chain.last_token
+
+    def mint_client_secret(
+        self,
+        identity_key: str,
+        identity: dict,
+        session_options: dict | None = None,
+        ttl_seconds: int | None = None,
+    ) -> tuple[str, int]:
+        """签发 OpenAI GA 形状的 ephemeral key，返回 ``(value, ttl_seconds)``。
+
+        ``value`` 形如 ``ek_...``，仅可在 TTL 内由任意次
+        ``/v1/realtime/calls`` 兑换（网络重试友好）；到期即失效。
+        """
+        ttl = min(
+            max(10, ttl_seconds or self.client_secret_default_ttl_seconds),
+            self.client_secret_max_ttl_seconds,
+        )
+        now = time.monotonic()
+        secret = f"ek_{secrets.token_urlsafe(32)}"
+        with self._lock:
+            expired = [
+                key for key, value in self._client_secrets.items()
+                if value.expires_at <= now
+            ]
+            for key in expired:
+                self._client_secrets.pop(key, None)
+            self._client_secrets[secret] = _ClientSecret(
+                identity_key=identity_key,
+                identity=dict(identity),
+                expires_at=now + ttl,
+                session_options=dict(session_options or {}),
+            )
+        return secret, ttl
+
+    def redeem_client_secret(self, secret: str) -> _ClientSecret | None:
+        """校验并返回 ephemeral key 绑定的身份与会话配置；无效返回 None。"""
+        if not secret or not secret.startswith("ek_"):
+            return None
+        now = time.monotonic()
+        with self._lock:
+            record = self._client_secrets.get(secret)
+            if record is None:
+                return None
+            if record.expires_at <= now:
+                self._client_secrets.pop(secret, None)
+                return None
+            return _ClientSecret(
+                identity_key=record.identity_key,
+                identity=dict(record.identity),
+                expires_at=record.expires_at,
+                session_options=dict(record.session_options),
+            )
 
     def pin_session(
         self,

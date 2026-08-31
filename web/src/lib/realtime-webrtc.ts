@@ -6,7 +6,8 @@ export type RealtimeEvent = {
 export type ConnectOptions = {
   authorization: string;
   voice: string;
-  signalingUrl: string;
+  /** API 服务地址；同源部署传空字符串。 */
+  baseUrl: string;
   attemptId?: string;
   conversationId?: string;
   parentMessageId?: string;
@@ -58,6 +59,35 @@ function decodeDataChannelMessage(raw: string): RealtimeEvent {
 
 function normalizeSdpLineEndings(sdp: string): string {
   return `${sdp.trim().replace(/\r?\n/g, "\r\n")}\r\n`;
+}
+
+export function realtimeEndpoint(baseUrl: string, path: string): string {
+  return baseUrl ? new URL(path, baseUrl).toString() : path;
+}
+
+type SignalingErrorBody = {
+  attempt_id?: string;
+  error?: { message?: string; retryable?: boolean; retry_after_ms?: number };
+};
+
+async function signalingErrorFromResponse(
+  response: globalThis.Response,
+  fallbackMessage: string,
+  fallbackAttemptId = "",
+): Promise<RealtimeSignalingError> {
+  let body: SignalingErrorBody = {};
+  try {
+    body = (await response.json()) as SignalingErrorBody;
+  } catch {
+    // 非 JSON 错误响应（如网关错误页）直接落到 fallback 文案。
+  }
+  return new RealtimeSignalingError(
+    body.error?.message || `${fallbackMessage} (HTTP ${response.status})`,
+    response.status,
+    Boolean(body.error?.retryable),
+    body.error?.retry_after_ms || 0,
+    body.attempt_id || response.headers.get("X-Attempt-Id") || fallbackAttemptId,
+  );
 }
 
 function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
@@ -137,7 +167,7 @@ export class RealtimeWebRTCConnection {
   private audioElement: HTMLAudioElement | null = null;
   private signalingAbort: AbortController | null = null;
   private statsTimer: number | null = null;
-  private sessionReport: { authorization: string; signalingUrl: string; attemptId: string } | null = null;
+  private sessionReport: { authorization: string; baseUrl: string; callId: string } | null = null;
   private closed = true;
 
   constructor(private readonly handlers: RealtimeWebRTCHandlers) {}
@@ -238,70 +268,82 @@ export class RealtimeWebRTCConnection {
 
     const signalingAbort = new AbortController();
     this.signalingAbort = signalingAbort;
-    const response = await fetch(options.signalingUrl, {
+
+    // 第一步：用项目 API Key 换取 OpenAI GA 形状的 ephemeral key。
+    // 续接/重试参数放在 session.chatgpt2api 扩展命名空间中，切换官方
+    // API 时删除该字段即可。
+    const chatgpt2api: Record<string, string> = {};
+    if (options.attemptId) chatgpt2api.attempt_id = options.attemptId;
+    if (options.conversationId) chatgpt2api.conversation_id = options.conversationId;
+    if (options.parentMessageId) chatgpt2api.parent_message_id = options.parentMessageId;
+    if (options.resumeHandle) chatgpt2api.resume_handle = options.resumeHandle;
+    const secretResponse = await fetch(realtimeEndpoint(options.baseUrl, "/v1/realtime/client_secrets"), {
       method: "POST",
       headers: {
         Authorization: options.authorization,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        sdp: pc.localDescription.sdp,
-        voice: options.voice,
-        attempt_id: options.attemptId,
-        ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
-        ...(options.parentMessageId ? { parent_message_id: options.parentMessageId } : {}),
-        ...(options.resumeHandle ? { resume_handle: options.resumeHandle } : {}),
+        session: {
+          type: "realtime",
+          audio: { output: { voice: options.voice } },
+          ...(Object.keys(chatgpt2api).length > 0 ? { chatgpt2api } : {}),
+        },
       }),
       signal: signalingAbort.signal,
     });
+    if (!secretResponse.ok) {
+      if (this.signalingAbort === signalingAbort) this.signalingAbort = null;
+      throw await signalingErrorFromResponse(secretResponse, "实时信令失败", options.attemptId || "");
+    }
+    const secret = (await secretResponse.json()) as { value?: string };
+    if (!secret.value) {
+      if (this.signalingAbort === signalingAbort) this.signalingAbort = null;
+      throw new Error("实时信令返回了无效的 ephemeral key");
+    }
+
+    // 第二步：官方 GA 形状的 SDP 交换 —— 裸 SDP 进，裸 SDP 出，
+    // call id 在 Location 响应头。
+    const callResponse = await fetch(realtimeEndpoint(options.baseUrl, "/v1/realtime/calls"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret.value}`,
+        "Content-Type": "application/sdp",
+      },
+      body: pc.localDescription.sdp,
+      signal: signalingAbort.signal,
+    });
     if (this.signalingAbort === signalingAbort) this.signalingAbort = null;
-    const responseText = await response.text();
-    let result: {
-      sdp?: string;
-      location?: string;
-      attempt_id?: string;
-      request_id?: string;
-      session_handle?: string;
-      resume_handle?: string;
-      detail?: string;
-      error?: { message?: string; retryable?: boolean; retry_after_ms?: number };
-    } = {};
-    try {
-      result = JSON.parse(responseText) as typeof result;
-    } catch {
-      if (!response.ok) {
-        throw new Error(`实时信令失败 (HTTP ${response.status})`);
-      }
-      throw new Error("实时信令返回了无效响应");
+    if (!callResponse.ok) {
+      throw await signalingErrorFromResponse(callResponse, "实时信令失败", options.attemptId || "");
     }
-    if (!response.ok || !result.sdp) {
-      const message = result.error?.message || result.detail || `实时信令失败 (HTTP ${response.status})`;
-      throw new RealtimeSignalingError(
-        message,
-        response.status,
-        Boolean(result.error?.retryable),
-        result.error?.retry_after_ms || 0,
-        result.attempt_id || options.attemptId || "",
-      );
-    }
+    const answerSdp = await callResponse.text();
+    if (!answerSdp.trim()) throw new Error("实时信令返回了无效响应");
+    const location = callResponse.headers.get("Location") || "";
+    const callId = callResponse.headers.get("X-Attempt-Id")
+      || location.split("/").filter(Boolean).pop()
+      || options.attemptId
+      || "";
+    const sessionHandle = callResponse.headers.get("X-Session-Handle")
+      || callResponse.headers.get("X-Resume-Handle")
+      || "";
 
     // Quota events can arrive as soon as the DataChannel opens, before connect()
     // finishes awaiting both transports. Make the report context available first.
-    const attemptId = result.attempt_id || options.attemptId || "";
     this.sessionReport = {
       authorization: options.authorization,
-      signalingUrl: options.signalingUrl.replace(/\/$/, ""),
-      attemptId,
+      baseUrl: options.baseUrl,
+      callId,
     };
     if (this.closed) throw new Error("连接已取消");
-    await pc.setRemoteDescription({ type: "answer", sdp: normalizeSdpLineEndings(result.sdp) });
+    await pc.setRemoteDescription({ type: "answer", sdp: normalizeSdpLineEndings(answerSdp) });
     await Promise.all([waitForConnection(pc), waitForDataChannel(dc)]);
     return {
-      location: result.location || "",
-      attemptId,
-      requestId: result.request_id || response.headers.get("X-Request-ID") || "",
-      sessionHandle: result.session_handle || result.resume_handle || "",
-      resumeHandle: result.resume_handle || result.session_handle || "",
+      location,
+      attemptId: callId,
+      requestId: callResponse.headers.get("X-Request-ID") || "",
+      sessionHandle,
+      resumeHandle: sessionHandle,
     };
   }
 
@@ -311,9 +353,9 @@ export class RealtimeWebRTCConnection {
     retryAfterSeconds?: number;
   }): Promise<void> {
     const report = this.sessionReport;
-    if (!report?.attemptId) return;
+    if (!report?.callId) return;
     try {
-      await fetch(`${report.signalingUrl}/${encodeURIComponent(report.attemptId)}/quota-exhausted`, {
+      await fetch(realtimeEndpoint(report.baseUrl, `/v1/realtime/calls/${encodeURIComponent(report.callId)}/quota-exhausted`), {
         method: "POST",
         headers: {
           Authorization: report.authorization,

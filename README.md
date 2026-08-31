@@ -119,7 +119,7 @@ environment:
 - 兼容 `POST /v1/images/edits` 图片编辑接口
 - 兼容面向图片场景的 `POST /v1/chat/completions`
 - 兼容面向图片场景的 `POST /v1/responses`
-- 提供 Realtime WebRTC 信令、语音列表、能力发现和 WebSocket 音频桥接接口
+- 提供对齐 OpenAI Realtime API（GA）形状的实时语音接口：`/v1/realtime/client_secrets` + `/v1/realtime/calls`，另有语音列表、能力发现、文字注入和 WebSocket 音频桥接接口
 - `GET /v1/models` 返回 `gpt-image-2`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、
   `gpt-5-mini`
 - 支持通过 `n` 返回多张生成结果
@@ -361,22 +361,29 @@ curl http://localhost:8000/v1/responses \
 
 ### 实时语音 API
 
-实时语音接口同样使用项目的 API Key：
+实时语音接口的形状对齐 [OpenAI Realtime API（GA）](https://developers.openai.com/api/docs/guides/realtime-webrtc)：
+先用项目 API Key 换取短时效 ephemeral key（`ek_...`），再用它交换 WebRTC
+SDP。按这套接口集成后，未来切换到 OpenAI 官方只需要更换 base URL 和 API
+Key（详见下文「与 OpenAI 官方 API 的差异」）。
 
 ```http
 Authorization: Bearer <auth-key>
 ```
 
-| 端点 | 用途 |
-|:--|:--|
-| `GET /v1/realtime/capabilities` | 获取支持的传输方式、音频格式和相关端点 |
-| `GET /v1/realtime/voices` | 获取可用声音列表 |
-| `POST /v1/realtime/sessions` | 交换 WebRTC SDP，媒体随后在客户端和上游之间直连 |
-| `WS /v1/realtime` | 服务端 WebSocket 音频桥接，适合无法使用 WebRTC 的客户端 |
+| 端点 | 对应官方端点 | 用途 |
+|:--|:--|:--|
+| `POST /v1/realtime/client_secrets` | ✅ 同名 | 签发短时效 ephemeral key，绑定声音与会话配置 |
+| `POST /v1/realtime/calls` | ✅ 同名 | 交换 WebRTC SDP（`application/sdp` 或 multipart），媒体随后在客户端和上游之间直连 |
+| `WS /v1/realtime` | ✅ 同名 | 服务端 WebSocket 音频桥接，适合无法使用 WebRTC 的客户端 |
+| `GET /v1/realtime/capabilities` | 私有扩展 | 获取支持的传输方式、音频格式和相关端点 |
+| `GET /v1/realtime/voices` | 私有扩展 | 获取可用声音列表（含官方声音别名与试听地址） |
+| `POST /v1/realtime/calls/{call_id}/text` | 私有扩展 | 向语音会话所在对话注入文字（SSE 返回） |
+| `POST /v1/realtime/calls/{call_id}/quota-exhausted` | 私有扩展 | 回报账号语音额度耗尽，触发账号冷却 |
+| `POST /v1/realtime/sessions`（含 `/text`、`/quota-exhausted` 子路径） | 已废弃 | 旧版 JSON 信令端点，仅为兼容保留，新集成请勿使用 |
 
-浏览器、App 和桌面客户端推荐使用 WebRTC。服务端只处理 API Key 鉴权和 SDP
-信令，不会把上游账号 Token 暴露给客户端；音频媒体不经过本服务进行
-Base64 转码，因此延迟和抖动更低。
+浏览器、App 和桌面客户端推荐使用 WebRTC。服务端只处理鉴权和 SDP 信令，
+不会把上游账号 Token 暴露给客户端；音频媒体不经过本服务进行 Base64 转
+码，因此延迟和抖动更低。
 
 信令端点默认按 API Key 身份限制为每分钟 20 次请求，同时最多处理 8 个并发
 上游 SDP 交换。可通过以下环境变量调整：
@@ -385,7 +392,9 @@ Base64 转码，因此延迟和抖动更低。
 |:--|:--|:--|
 | `CHATGPT2API_REALTIME_SIGNALING_RATE_PER_MINUTE` | `20` | 单个身份每分钟最多创建的信令请求 |
 | `CHATGPT2API_REALTIME_SIGNALING_CONCURRENCY` | `8` | 全局并发 SDP 交换数 |
-| `CHATGPT2API_REALTIME_ATTEMPT_TTL_SECONDS` | `300` | 账号重试链的保留时间 |
+| `CHATGPT2API_REALTIME_CLIENT_SECRET_TTL_SECONDS` | `600` | ephemeral key（`ek_...`）默认有效期 |
+| `CHATGPT2API_REALTIME_CLIENT_SECRET_MAX_TTL_SECONDS` | `7200` | ephemeral key 可申请的最长有效期 |
+| `CHATGPT2API_REALTIME_ATTEMPT_TTL_SECONDS` | `300` | 账号重试链（call id）的保留时间 |
 | `CHATGPT2API_REALTIME_SESSION_TTL_SECONDS` | `7200` | 同账号 resume/session handle 的有效期 |
 | `CHATGPT2API_REALTIME_QUOTA_COOLDOWN_SECONDS` | `3600` | DataChannel 确认语音额度耗尽后，暂停选择该账号的时间 |
 
@@ -399,7 +408,28 @@ curl http://localhost:8000/v1/realtime/voices \
   -H "Authorization: Bearer <auth-key>"
 ```
 
+`/voices` 返回 ChatGPT Web Voice 的原生声音，同时列出映射到它的 OpenAI
+官方声音名（`aliases`）与试听音频地址（`preview_url`）。两套名字在所有
+接口中均可使用：
+
+| 官方声音名 | 上游声音 | 官方声音名 | 上游声音 |
+|:--|:--|:--|:--|
+| `marin`（默认） | `ember` | `coral` | `juniper` |
+| `cedar` | `fathom` | `echo` | `orbit` |
+| `alloy` | `breeze` | `sage` | `vale` |
+| `ash` | `cove` | `shimmer` | `glimmer` |
+| `ballad` | `maple` | `verse` | `ember` |
+
 #### 浏览器 WebRTC 接入
+
+与官方一致的两步流程：
+
+1. `POST /v1/realtime/client_secrets`——用项目 API Key 换取 ephemeral
+   key（`ek_...`，默认 10 分钟有效）。三方集成时这一步应放在你自己的
+   服务端，浏览器只拿到 `ek_`，不接触长期 Key（与官方架构相同）。
+2. `POST /v1/realtime/calls`——用 `ek_` 提交裸 SDP offer
+   （`Content-Type: application/sdp`），响应体是裸 SDP answer，call id
+   在 `Location` 响应头。
 
 下面是完整的最小接入示例。生产代码还应处理麦克风拒绝授权、连接超时、
 ICE 失败和页面卸载时的资源释放。
@@ -411,6 +441,31 @@ let previousAttemptId = "";
 let resumeHandle = "";
 let conversationId = "";
 let parentMessageId = "";
+
+// 第一步：换取 ephemeral key。声音可用官方名（marin/cedar/...）或
+// 原生名（ember/fathom/...）。chatgpt2api 是本项目的扩展命名空间，
+// 只在额度重试/续接对话时需要，切换官方 API 时删掉即可。
+const secretResponse = await fetch(`${baseUrl}/v1/realtime/client_secrets`, {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    expires_after: { anchor: "created_at", seconds: 600 },
+    session: {
+      type: "realtime",
+      audio: { output: { voice: "marin" } },
+      chatgpt2api: {
+        attempt_id: previousAttemptId || undefined,
+        conversation_id: conversationId || undefined,
+        parent_message_id: parentMessageId || undefined,
+        resume_handle: resumeHandle || undefined,
+      },
+    },
+  }),
+});
+const { value: ephemeralKey } = await secretResponse.json();
 
 const pc = new RTCPeerConnection();
 const remoteAudio = new Audio();
@@ -483,50 +538,54 @@ if (pc.iceGatheringState !== "complete") {
   });
 }
 
-const response = await fetch(`${baseUrl}/v1/realtime/sessions`, {
+// 第二步：官方 GA 形状的 SDP 交换——裸 SDP 进、裸 SDP 出。
+const response = await fetch(`${baseUrl}/v1/realtime/calls`, {
   method: "POST",
   headers: {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json",
+    Authorization: `Bearer ${ephemeralKey}`,
+    "Content-Type": "application/sdp",
   },
-  body: JSON.stringify({
-    sdp: pc.localDescription.sdp,
-    voice: "ember",
-    language: "auto",
-    // 额度重试时传回上一次响应中的 attempt_id，避免再次选择同一账号。
-    attempt_id: previousAttemptId || undefined,
-    // 继续已有 Web Voice 对话时传入这些字段；空值应省略。
-    conversation_id: conversationId || undefined,
-    parent_message_id: parentMessageId || undefined,
-    resume_handle: resumeHandle || undefined,
-  }),
+  body: pc.localDescription.sdp,
 });
 
-const answer = await response.json();
 if (!response.ok) {
-  // { error: { code, message, retryable, retry_after_ms, request_id } }
-  throw new Error(answer.error?.message || `signaling failed: ${response.status}`);
+  // 错误为 JSON：{ error: { code, message, type, retryable, retry_after_ms, request_id } }
+  const failure = await response.json().catch(() => ({}));
+  throw new Error(failure.error?.message || `signaling failed: ${response.status}`);
 }
-previousAttemptId = answer.attempt_id;
-resumeHandle = answer.resume_handle || answer.session_handle || "";
-const answerSdp = `${answer.sdp.trim().replace(/\r?\n/g, "\r\n")}\r\n`;
+// Location: /v1/realtime/calls/{call_id}；call_id 同 X-Attempt-Id。
+previousAttemptId = response.headers.get("X-Attempt-Id") || "";
+resumeHandle = response.headers.get("X-Session-Handle") || "";
+const answerSdp = `${(await response.text()).trim().replace(/\r?\n/g, "\r\n")}\r\n`;
 await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 ```
 
-成功响应还包含 `attempt_id`、`request_id`，响应头包含 `X-Request-ID`。当
-DataChannel 收到语音额度耗尽的 `usage_update` 或 `goodbye` 时，重新创建
-PeerConnection，并把 `attempt_id` 放入下一次请求；服务端会在这条重试链中排除
+`/v1/realtime/calls` 也接受官方 unified interface 的 multipart 形状
+（`sdp` + `session` JSON 两个表单字段），此时可直接用项目 API Key 鉴权，
+适合把 SDP 中转放在自己服务端的集成方式。
+
+`/v1/realtime/calls` 的成功响应通过响应头返回会话元数据：
+
+| 响应头 | 说明 |
+|:--|:--|
+| `Location` | call 资源路径 `/v1/realtime/calls/{call_id}`，与官方一致 |
+| `X-Attempt-Id` | 即 call id；额度重试时放入下一次 `chatgpt2api.attempt_id` |
+| `X-Session-Handle` / `X-Resume-Handle` | 不透明的续接句柄，用于文字注入后在同一账号恢复会话 |
+| `X-Request-ID` | 服务端请求标识，用于排障 |
+
+当 DataChannel 收到语音额度耗尽的 `usage_update` 或 `goodbye`
+（`cap_reached`）时：先 `POST /v1/realtime/calls/{call_id}/quota-exhausted`
+（项目 API Key 鉴权）把耗尽账号送入冷却，再重新走两步信令并在
+`chatgpt2api.attempt_id` 里带上上一次的 call id；服务端会在这条重试链中排除
 已经尝试过的账号。收到 `429` 或 `503` 时应遵循 `Retry-After` 并加入随机退避。
-项目自带调试页会把 `cap_reached` 回报给服务端，使耗尽账号进入临时冷却，后续新
-会话也不会继续命中该账号。
 
-成功响应同时返回不透明的 `session_handle`/`resume_handle`。它只在签发它的 API
-Key 身份下有效，服务端仅在内存中保存上游账号绑定，绝不会把上游 Token 返回给
-客户端。文字注入完成后，客户端可以把同一个 `resume_handle` 与
-`conversation_id`、最新的 `parent_message_id` 一起用于下一次 SDP 请求，以便
-在同一账号上恢复语音上下文；`attempt_id` 仍只用于额度重试时的账号排除。
+`X-Session-Handle` 只在签发它的 API Key 身份下有效，服务端仅在内存中保存上游
+账号绑定，绝不会把上游 Token 返回给客户端。文字注入完成后，客户端可以把同一个
+handle 与 `conversation_id`、最新的 `parent_message_id` 一起放进下一次
+`client_secrets` 的 `chatgpt2api` 扩展里，以便在同一账号上恢复语音上下文；
+`attempt_id` 仍只用于额度重试时的账号排除。
 
-文字注入端点为 `POST /v1/realtime/sessions/{attempt_id}/text`，请求体包含
+文字注入端点为 `POST /v1/realtime/calls/{call_id}/text`，请求体包含
 `text`、`conversation_id`，以及可选的 `parent_message_id` 和 `resume_handle`
 （服务端兼容 `session_handle` 别名）。
 省略 parent 时服务端会读取对话的 `current_node`，并在 SSE 事件中返回最新的
@@ -560,13 +619,13 @@ dataChannel.send(JSON.stringify({
 parentMessageId = messageId;
 ```
 
-HTTP SSE 端点 `/v1/realtime/sessions/{attempt_id}/text` 仍保留为兼容接口，适合
-没有活动 DataChannel 的客户端或通话外的文字注入。它会沿用同一个 ChatGPT
-conversation，并返回 assistant 消息和最新的 `parent_message_id`：
+HTTP SSE 端点 `/v1/realtime/calls/{call_id}/text` 适合没有活动 DataChannel 的
+客户端或通话外的文字注入。它会沿用同一个 ChatGPT conversation，并返回
+assistant 消息和最新的 `parent_message_id`：
 
 ```js
 const textResponse = await fetch(
-  `${baseUrl}/v1/realtime/sessions/${encodeURIComponent(previousAttemptId)}/text`,
+  `${baseUrl}/v1/realtime/calls/${encodeURIComponent(previousAttemptId)}/text`,
   {
     method: "POST",
     headers: {
@@ -599,6 +658,32 @@ const textResponse = await fetch(
   assistant 的文字 JSON Patch，接入方需要按 message id 顺序合并。
 - `usage_update` / `goodbye`：额度状态和会话结束原因。
 
+#### 与 OpenAI 官方 API 的差异
+
+信令层（`client_secrets` → `calls`）与官方 GA 完全同形，切换官方时改动如下：
+
+1. **换地址和 Key**：base URL 改为 `https://api.openai.com`，项目 API Key 换成
+   OpenAI API Key；两步信令代码不变。
+2. **删掉扩展字段**：`session.chatgpt2api`（账号重试、对话续接）、
+   `/calls/{call_id}/text`、`/calls/{call_id}/quota-exhausted`、
+   `/capabilities`、`/voices` 都是本项目的私有扩展，官方没有对应物。官方 API
+   无账号池概念，这些机制天然不再需要。
+3. **声音直接可用**：本项目接受官方声音名（推荐集成时统一使用官方名，如
+   `marin`），切换后无需改动；原生名（`ember` 等）为本项目专有。
+4. **会话配置**：官方在 `client_secrets` 的 `session` 里还支持
+   `model`、`instructions`、`tools` 等字段；本项目会宽松忽略暂不支持的字段
+   （上游模型固定，`model` 仅回显），因此官方 SDK 生成的请求体可以直接使用。
+5. **DataChannel 事件（主要差异）**：由于媒体在浏览器与 ChatGPT 网页版之间
+   直连，事件是 ChatGPT Web Voice 的私有格式（`data_message` 双层封装、
+   `chat_message_delta` JSON Patch 等），而官方是
+   `response.output_audio_transcript.delta` 等 GA 事件。集成时请把事件解析
+   收敛到一个适配层（可参考
+   `web/src/lib/realtime-transcript.ts`，它同时兼容两套事件命名），切换官方时
+   只需替换这一层。
+6. **文字注入**：官方通过 DataChannel 发送 `conversation.item.create` +
+   `response.create`；本项目在 WebRTC 直连模式下用 `relay_message`（见上文），
+   WebSocket 桥接模式下已兼容官方客户端事件名。
+
 #### WebSocket 音频桥接
 
 不能使用 WebRTC 时，可以连接：
@@ -612,7 +697,8 @@ WebSocket 无法设置自定义请求头，可使用 `?api_key=<auth-key>`；但
 代理访问日志，因此浏览器仍推荐使用上面的 WebRTC 方案。
 
 该兼容端点的实际模型标识为 `chatgpt-web-voice`，模型不可通过查询参数切换；声音
-必须在建立 WebSocket 时用 `voice` 查询参数选择。连接建立后再通过
+必须在建立 WebSocket 时用 `voice` 查询参数选择（官方声音名与原生名均可，如
+`voice=marin`）。连接建立后再通过
 `session.update` 切换声音会返回 `unsupported_session_update`，避免客户端误以为
 设置已经生效。
 

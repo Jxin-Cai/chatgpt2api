@@ -41,6 +41,9 @@ def create_app() -> FastAPI:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        # /v1/realtime/calls 通过 Location / X-* 响应头返回 call 元数据，
+        # 跨域部署时浏览器必须显式获准读取这些头。
+        expose_headers=["*"],
     )
     app.include_router(ai.create_router())
     app.include_router(accounts.create_router())

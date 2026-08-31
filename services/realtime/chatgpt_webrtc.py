@@ -23,6 +23,39 @@ REALTIME_VOICES: tuple[dict[str, str], ...] = (
 )
 REALTIME_VOICE_IDS = frozenset(voice["id"] for voice in REALTIME_VOICES)
 
+# OpenAI 官方 Realtime API 声音名 → ChatGPT Web Voice 声音 id。客户端可以
+# 直接使用官方声音名（例如 "marin"），未来切换到 api.openai.com 时无需改动
+# 传参；映射按音色气质就近选择，允许多个官方名落在同一个上游声音上。
+OFFICIAL_VOICE_ALIASES: dict[str, str] = {
+    "marin": "ember",
+    "cedar": "fathom",
+    "alloy": "breeze",
+    "ash": "cove",
+    "ballad": "maple",
+    "coral": "juniper",
+    "echo": "orbit",
+    "sage": "vale",
+    "shimmer": "glimmer",
+    "verse": "ember",
+}
+
+
+def resolve_voice(value: str | None) -> str | None:
+    """把官方声音名或原生声音 id 解析为上游可用的声音 id；未知返回 None。"""
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return REALTIME_DEFAULT_VOICE
+    if normalized in REALTIME_VOICE_IDS:
+        return normalized
+    return OFFICIAL_VOICE_ALIASES.get(normalized)
+
+
+def official_aliases_for(voice_id: str) -> list[str]:
+    """列出映射到指定上游声音的官方声音名，用于 /voices 列表。"""
+    return sorted(
+        alias for alias, target in OFFICIAL_VOICE_ALIASES.items() if target == voice_id
+    )
+
 
 def build_session_config(
     voice: str = REALTIME_DEFAULT_VOICE,

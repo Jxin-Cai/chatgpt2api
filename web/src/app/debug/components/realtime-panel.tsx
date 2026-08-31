@@ -10,6 +10,7 @@ import {
   RealtimeEvent,
   RealtimeSignalingError,
   RealtimeWebRTCConnection,
+  realtimeEndpoint,
   type RealtimeConnectionQuality,
 } from "@/lib/realtime-webrtc";
 import {
@@ -37,7 +38,10 @@ type TranscriptEntry = {
 
 type LivePhase = "offline" | "connecting" | "listening" | "thinking" | "speaking" | "muted" | "error";
 
-const VOICES = [
+type VoiceOption = { value: string; label: string; preview: string };
+
+// /v1/realtime/voices 不可达时的内置回退列表。
+const FALLBACK_VOICES: VoiceOption[] = [
   { value: "ember", label: "Ember · 自信乐观", preview: "/audio/voice-previews/ember.m4a" },
   { value: "glimmer", label: "Sol · 聪慧随性", preview: "/audio/voice-previews/glimmer.m4a" },
   { value: "breeze", label: "Breeze · 活泼认真", preview: "/audio/voice-previews/breeze.m4a" },
@@ -47,7 +51,7 @@ const VOICES = [
   { value: "orbit", label: "Spruce · 冷静坚定", preview: "/audio/voice-previews/orbit.m4a" },
   { value: "vale", label: "Vale · 聪颖好奇", preview: "/audio/voice-previews/vale.m4a" },
   { value: "fathom", label: "Arbor · 随和多才", preview: "/audio/voice-previews/fathom.m4a" },
-] as const;
+];
 
 const MAX_QUOTA_RETRIES = 2;
 const MAX_NETWORK_RETRIES = 3;
@@ -122,6 +126,7 @@ function quotaRecoveryFromEvent(data: RealtimeEvent): {
 
 export function RealtimePanel() {
   const [voice, setVoice] = useState("ember");
+  const [voices, setVoices] = useState<VoiceOption[]>(FALLBACK_VOICES);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [micActive, setMicActive] = useState(false);
@@ -184,7 +189,7 @@ export function RealtimePanel() {
     }
   }, []);
 
-  const playVoicePreview = useCallback((item: (typeof VOICES)[number]) => {
+  const playVoicePreview = useCallback((item: VoiceOption) => {
     if (!selectOpenRef.current || connected || connecting) return;
     let audio = previewAudioRef.current;
     if (!audio && typeof Audio !== "undefined") {
@@ -232,6 +237,38 @@ export function RealtimePanel() {
   useEffect(() => {
     if (connected || connecting) stopVoicePreview();
   }, [connected, connecting, stopVoicePreview]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const session = await getStoredAuthSession();
+      if (!session || cancelled) return;
+      try {
+        const response = await fetch(realtimeEndpoint(webConfig.apiUrl || "", "/v1/realtime/voices"), {
+          headers: { Authorization: `Bearer ${session.key}` },
+        });
+        if (!response.ok) return;
+        const payload = (await response.json()) as {
+          data?: Array<{ id?: string; name?: string; description?: string; preview_url?: string }>;
+        };
+        const items: VoiceOption[] = (payload.data || [])
+          .filter((item): item is { id: string; name?: string; description?: string; preview_url?: string } =>
+            typeof item.id === "string" && item.id.length > 0)
+          .map((item) => ({
+            value: item.id,
+            label: [item.name, item.description].filter(Boolean).join(" · ") || item.id,
+            // 试听音频与页面同源，因此保留相对路径。
+            preview: item.preview_url || `/audio/voice-previews/${item.id}.m4a`,
+          }));
+        if (!cancelled && items.length > 0) setVoices(items);
+      } catch {
+        // 拉取失败时继续使用内置回退列表。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const addLog = useCallback((dir: LogEntry["dir"], text: string) => {
     setLogs((previous) => [
@@ -576,9 +613,6 @@ export function RealtimePanel() {
       resumeHandleRef.current = "";
     }
 
-    const signalingUrl = webConfig.apiUrl
-      ? new URL("/v1/realtime/sessions", webConfig.apiUrl).toString()
-      : "/v1/realtime/sessions";
     const connection = new RealtimeWebRTCConnection({
       onEvent: handleRealtimeEvent,
       onRemoteStream: attachRemoteMeter,
@@ -613,7 +647,7 @@ export function RealtimePanel() {
       const result = await connection.connect({
         authorization: `Bearer ${session.key}`,
         voice,
-        signalingUrl,
+        baseUrl: webConfig.apiUrl || "",
         attemptId: (retry || preserveSession) ? attemptIdRef.current : undefined,
         conversationId: preserveSession ? conversationIdRef.current : undefined,
         parentMessageId: preserveSession ? parentMessageIdRef.current : undefined,
@@ -751,7 +785,7 @@ export function RealtimePanel() {
                 }
               }}
             >
-              {VOICES.map((item) => (
+              {voices.map((item) => (
                 <SelectItem
                   key={item.value}
                   value={item.value}
