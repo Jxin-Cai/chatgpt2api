@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import json
+import struct
 import time
 
 import pytest
@@ -16,8 +18,10 @@ from services.realtime.chatgpt_webrtc import (
 )
 from services.realtime.session import decode_data_channel_message, quota_error_from_message
 from services.realtime.session import (
+    PcmOutputAssembler,
     RealtimeQuotaExceeded,
     RealtimeSession,
+    pcm16_rms,
     resample_to_pcm16_mono,
 )
 from services.realtime.signaling import RealtimeSignalingGuard
@@ -453,3 +457,112 @@ def test_remote_stereo_audio_is_downmixed_to_exact_mono_pcm_size():
     assert output_frame.samples == 960
     assert len(pcm) == 960 * 2
     assert pcm[:2] != b"\x00\x00"
+
+
+def test_pcm16_rms_detects_silence_and_speech():
+    assert pcm16_rms(b"\x00\x00" * 32) == 0
+    assert pcm16_rms(struct.pack("<h", 1000) * 32) > 900
+
+
+def test_pcm_output_assembler_skips_idle_silence_and_keeps_speech_contiguous():
+    assembler = PcmOutputAssembler(chunk_bytes=8, max_silence_bytes=16, silence_rms=100)
+    loud = struct.pack("<4h", 1200, 1200, 1200, 1200)
+    quiet = struct.pack("<4h", 0, 0, 0, 0)
+
+    assert assembler.push(quiet) == []
+    first = assembler.push(loud)
+    second = assembler.push(loud)
+    pause = assembler.push(quiet)
+    ended = assembler.push(quiet)
+
+    assert [event.kind for event in first] == ["delta"]
+    assert first[0].pcm == loud
+    assert second[0].pcm == loud
+    assert [event.kind for event in ended] == ["delta", "done"]
+    reconstructed = b"".join(
+        event.pcm for event in [*first, *second, *pause, *ended] if event.kind == "delta"
+    )
+    assert reconstructed == loud + loud + quiet + quiet
+
+
+def test_ws_writer_sends_audio_before_transcript_backlog():
+    class FakeWs:
+        def __init__(self):
+            self.sent: list[str] = []
+
+        async def send_text(self, payload: str) -> None:
+            self.sent.append(payload)
+
+    async def run():
+        session = RealtimeSession(
+            identity={},
+            model="test",
+            websocket=FakeWs(),
+            access_token="token",
+        )
+        session._writer_started = True
+        for index in range(8):
+            await session._send_event("chat_message_delta", {"n": index})
+        await session._send_event("response.audio.delta", {"delta": "abc"})
+        writer = asyncio.create_task(session._ws_writer())
+        deadline = time.monotonic() + 0.5
+        while len(session._ws.sent) < 9 and time.monotonic() < deadline:
+            await asyncio.sleep(0)
+        session._closed = True
+        session._out_ready.set()
+        await asyncio.wait_for(writer, timeout=1)
+        types = [json.loads(item)["type"] for item in session._ws.sent]
+        assert types[0] == "response.audio.delta"
+        assert types.count("chat_message_delta") == 8
+
+    asyncio.run(run())
+
+
+def _loud_stereo_frame(samples: int = 960, value: int = 1200) -> AudioFrame:
+    frame = AudioFrame(format="s16", layout="stereo", samples=samples)
+    frame.sample_rate = 48000
+    frame.planes[0].update(struct.pack("<h", value) * (samples * 2))
+    return frame
+
+
+def test_audio_sender_forwards_contiguous_pcm_without_realtime_pacing():
+    class FakeTrack:
+        def __init__(self, frames: list[AudioFrame]):
+            self._frames = list(frames)
+
+        async def recv(self) -> AudioFrame:
+            if not self._frames:
+                raise RuntimeError("ended")
+            return self._frames.pop(0)
+
+    async def run():
+        session = RealtimeSession(
+            identity={},
+            model="test",
+            websocket=object(),
+            access_token="token",
+        )
+        sent: list[tuple[str, dict]] = []
+
+        async def capture(event_type: str, data: dict) -> None:
+            sent.append((event_type, data))
+
+        session._send_event = capture  # type: ignore[method-assign]
+        session._remote_audio_track = FakeTrack([_loud_stereo_frame() for _ in range(10)])
+
+        started = time.monotonic()
+        await session._audio_sender()
+        elapsed = time.monotonic() - started
+
+        deltas = [
+            base64.b64decode(data["delta"])
+            for event_type, data in sent
+            if event_type == "response.audio.delta"
+        ]
+        pcm = b"".join(deltas)
+        assert elapsed < 0.15
+        assert len(pcm) >= 10 * 960 * 2
+        assert pcm[:2] != b"\x00\x00"
+        assert sent[-1][0] == "response.audio.done"
+
+    asyncio.run(run())

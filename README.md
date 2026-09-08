@@ -722,6 +722,10 @@ WebSocket 无法设置自定义请求头，可使用 `?api_key=<auth-key>`；但
 {"type":"response.audio.delta","delta":"<base64-pcm16>"}
 ```
 
+输出分片是连续 PCM（约 80ms），按上游帧尽快转发，不按墙钟二次节拍。客户端应
+用环形缓冲或按 `AudioContext` 时间轴无缝拼接播放；欠载时补静音，不要插入整段
+延迟。一句话结束后会收到 `response.audio.done`。
+
 建议每个输入分片控制在 `20–100 ms`。单条 Base64 字符串最大为 `512000`
 字符；客户端应持续消费返回消息，并在结束时主动关闭 WebSocket。
 

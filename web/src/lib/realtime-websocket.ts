@@ -8,8 +8,51 @@ import {
 
 const SAMPLE_RATE = 48_000;
 const CAPTURE_CHUNK_SAMPLES = 1_920; // 40ms
-const PLAYOUT_LEAD_SECONDS = 0.22;
+const PLAYOUT_LEAD_SECONDS = 0.16;
 const CONNECTION_TIMEOUT_MS = 35_000;
+
+class LinearPcmResampler {
+  private leftover = new Float32Array(0);
+  private position = 0;
+
+  constructor(
+    private readonly sourceRate: number,
+    private readonly targetRate: number,
+  ) {}
+
+  reset(): void {
+    this.leftover = new Float32Array(0);
+    this.position = 0;
+  }
+
+  push(pcm: Int16Array): Float32Array {
+    const incoming = new Float32Array(pcm.length);
+    for (let index = 0; index < pcm.length; index += 1) incoming[index] = pcm[index] / 32768;
+    if (this.sourceRate === this.targetRate) return incoming;
+
+    const combined = new Float32Array(this.leftover.length + incoming.length);
+    combined.set(this.leftover);
+    combined.set(incoming, this.leftover.length);
+    const ratio = this.sourceRate / this.targetRate;
+    const outLength = Math.floor((combined.length - this.position - 1) / ratio);
+    if (outLength <= 0) {
+      this.leftover = combined;
+      return new Float32Array(0);
+    }
+    const out = new Float32Array(outLength);
+    let position = this.position;
+    for (let index = 0; index < outLength; index += 1) {
+      const i0 = Math.floor(position);
+      const frac = position - i0;
+      out[index] = combined[i0] * (1 - frac) + combined[i0 + 1] * frac;
+      position += ratio;
+    }
+    const consumed = Math.floor(position);
+    this.leftover = combined.slice(consumed);
+    this.position = position - consumed;
+    return out;
+  }
+}
 
 function websocketUrl(baseUrl: string, voice: string): string {
   const url = new URL("/v1/realtime", baseUrl || window.location.origin);
@@ -29,9 +72,10 @@ function bytesToBase64(buffer: ArrayBuffer): string {
 
 function base64ToPcm16(value: string): Int16Array {
   const binary = atob(value);
-  const buffer = new ArrayBuffer(binary.length);
+  const evenLength = binary.length & ~1;
+  const buffer = new ArrayBuffer(evenLength);
   const bytes = new Uint8Array(buffer);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  for (let index = 0; index < evenLength; index += 1) bytes[index] = binary.charCodeAt(index);
   return new Int16Array(buffer);
 }
 
@@ -43,10 +87,12 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
   private captureNode: AudioNode | null = null;
   private captureSink: GainNode | null = null;
   private playbackGain: GainNode | null = null;
+  private playbackNode: AudioWorkletNode | null = null;
   private playbackStreamDestination: MediaStreamAudioDestinationNode | null = null;
   private remoteStream: MediaStream | null = null;
   private activeSources = new Set<AudioBufferSourceNode>();
   private nextPlaybackAt = 0;
+  private playbackResampler: LinearPcmResampler | null = null;
   private microphoneEnabled = true;
   private connected = false;
   private closed = true;
@@ -115,6 +161,11 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         }
         if (event.type === "response.audio.delta" && typeof event.delta === "string") {
           this.scheduleAudio(event.delta);
+          return;
+        }
+        if (event.type === "response.audio.done") {
+          this.endScheduledAudio();
+          this.handlers.onEvent(event);
           return;
         }
         if (event.type === "input_audio_buffer.speech_started") this.stopScheduledAudio();
@@ -207,11 +258,14 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     this.micSource?.disconnect();
     this.captureNode?.disconnect();
     this.captureSink?.disconnect();
+    this.playbackNode?.disconnect();
     this.playbackGain?.disconnect();
     this.micSource = null;
     this.captureNode = null;
     this.captureSink = null;
+    this.playbackNode = null;
     this.playbackGain = null;
+    this.playbackResampler = null;
     this.playbackStreamDestination = null;
     this.remoteStream = null;
     this.microphone?.getTracks().forEach((track) => track.stop());
@@ -255,6 +309,8 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     sink.connect(context.destination);
     this.captureSink = sink;
 
+    this.playbackResampler = new LinearPcmResampler(SAMPLE_RATE, context.sampleRate);
+
     try {
       const processorSource = `
         class RealtimePcmCapture extends AudioWorkletProcessor {
@@ -286,7 +342,79 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
             return true;
           }
         }
+        class RealtimePcmPlayback extends AudioWorkletProcessor {
+          constructor(options) {
+            super();
+            const opts = (options && options.processorOptions) || {};
+            const ring = Math.max(8, opts.ringSamples || 96000);
+            this.buffer = new Float32Array(ring);
+            this.prefill = Math.max(128, opts.prefillSamples || Math.round(ring * 0.08));
+            this.read = 0;
+            this.write = 0;
+            this.available = 0;
+            this.playing = false;
+            this.ending = false;
+            this.port.onmessage = (event) => {
+              const data = event.data;
+              if (data && data.type === 'stop') {
+                this.read = 0;
+                this.write = 0;
+                this.available = 0;
+                this.playing = false;
+                this.ending = false;
+                return;
+              }
+              if (data && data.type === 'end') {
+                this.ending = true;
+                return;
+              }
+              let samples = data instanceof Float32Array ? data : new Float32Array(data);
+              if (samples.length > this.buffer.length) {
+                samples = samples.subarray(samples.length - this.buffer.length);
+              }
+              let space = this.buffer.length - this.available;
+              if (samples.length > space) {
+                const drop = samples.length - space;
+                this.read = (this.read + drop) % this.buffer.length;
+                this.available -= drop;
+                space = this.buffer.length - this.available;
+              }
+              let offset = 0;
+              while (offset < samples.length) {
+                const count = Math.min(samples.length - offset, this.buffer.length - this.write);
+                this.buffer.set(samples.subarray(offset, offset + count), this.write);
+                this.write = (this.write + count) % this.buffer.length;
+                this.available += count;
+                offset += count;
+              }
+              if (!this.playing && this.available >= this.prefill) this.playing = true;
+            };
+          }
+          process(_, outputs) {
+            const output = outputs[0] && outputs[0][0];
+            if (!output) return true;
+            if (!this.playing) {
+              output.fill(0);
+              return true;
+            }
+            for (let i = 0; i < output.length; i += 1) {
+              if (this.available > 0) {
+                output[i] = this.buffer[this.read];
+                this.read = (this.read + 1) % this.buffer.length;
+                this.available -= 1;
+              } else {
+                output[i] = 0;
+              }
+            }
+            if (this.ending && this.available <= 0) {
+              this.playing = false;
+              this.ending = false;
+            }
+            return true;
+          }
+        }
         registerProcessor('realtime-pcm-capture', RealtimePcmCapture);
+        registerProcessor('realtime-pcm-playback', RealtimePcmPlayback);
       `;
       const moduleUrl = URL.createObjectURL(new Blob([processorSource], { type: "text/javascript" }));
       await context.audioWorklet.addModule(moduleUrl);
@@ -300,7 +428,22 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
       source.connect(processor);
       processor.connect(sink);
       this.captureNode = processor;
+      const playback = new AudioWorkletNode(context, "realtime-pcm-playback", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: {
+          ringSamples: Math.max(context.sampleRate * 2, 96_000),
+          prefillSamples: Math.round(context.sampleRate * PLAYOUT_LEAD_SECONDS),
+        },
+      });
+      playback.connect(playbackGain);
+      this.playbackNode = playback;
     } catch {
+      this.playbackNode = null;
+    }
+    if (this.captureNode) return;
+    try {
       const processor = context.createScriptProcessor(2_048, 1, 1);
       processor.onaudioprocess = (event) => {
         const input = event.inputBuffer.getChannelData(0);
@@ -314,6 +457,8 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
       source.connect(processor);
       processor.connect(sink);
       this.captureNode = processor;
+    } catch {
+      // 采集节点不可用时仍允许纯播放/文字输入。
     }
   }
 
@@ -333,15 +478,24 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     if (!context || !output || this.closed) return;
     const pcm = base64ToPcm16(encoded);
     if (!pcm.length) return;
-    const buffer = context.createBuffer(1, pcm.length, SAMPLE_RATE);
-    const channel = buffer.getChannelData(0);
-    for (let index = 0; index < pcm.length; index += 1) channel[index] = pcm[index] / 32768;
+    const resampler = this.playbackResampler;
+    if (!resampler) return;
+    const samples = resampler.push(pcm);
+    if (!samples.length) return;
 
+    if (this.playbackNode) {
+      this.playbackNode.port.postMessage(samples, [samples.buffer]);
+      return;
+    }
+
+    const buffer = context.createBuffer(1, samples.length, context.sampleRate);
+    buffer.getChannelData(0).set(samples);
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(output);
     const now = context.currentTime;
-    if (this.nextPlaybackAt < now + 0.04) this.nextPlaybackAt = now + PLAYOUT_LEAD_SECONDS;
+    if (this.nextPlaybackAt <= 0) this.nextPlaybackAt = now + PLAYOUT_LEAD_SECONDS;
+    else if (this.nextPlaybackAt < now) this.nextPlaybackAt = now;
     source.start(this.nextPlaybackAt);
     this.nextPlaybackAt += buffer.duration;
     this.activeSources.add(source);
@@ -351,7 +505,13 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     };
   }
 
+  private endScheduledAudio(): void {
+    this.playbackNode?.port.postMessage({ type: "end" });
+  }
+
   private stopScheduledAudio(): void {
+    this.playbackNode?.port.postMessage({ type: "stop" });
+    this.playbackResampler?.reset();
     for (const source of this.activeSources) {
       try {
         source.stop();

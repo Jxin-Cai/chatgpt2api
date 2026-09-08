@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import array
 import asyncio
 import base64
 import json
+import sys
 import time
 from collections.abc import Callable
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from av import AudioFrame, AudioResampler
 from fastapi import WebSocket
-import numpy as np
 
 from services.realtime.audio_track import BufferedAudioStreamTrack, SAMPLE_RATE
 from services.realtime.chatgpt_webrtc import create_peer_connection
@@ -17,7 +19,12 @@ from utils.log import logger
 
 MAX_INPUT_AUDIO_B64_CHARS = 512_000
 DATA_CHANNEL_QUEUE_SIZE = 512
+AUDIO_OUT_QUEUE_SIZE = 48
+EVENT_OUT_QUEUE_SIZE = 128
 CHATGPT_WEB_REALTIME_MODEL = "chatgpt-web-voice"
+OUTPUT_CHUNK_SECONDS = 0.08
+MAX_TRAILING_SILENCE_SECONDS = 0.45
+SILENCE_RMS_THRESHOLD = 100.0
 
 
 class RealtimeQuotaExceeded(RuntimeError):
@@ -88,6 +95,97 @@ def resample_to_pcm16_mono(
     return result
 
 
+def pcm16_rms(pcm: bytes) -> float:
+    """计算 little-endian PCM16 的 RMS，供静音判断使用。"""
+    length = len(pcm) - (len(pcm) % 2)
+    if length < 2:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(pcm[:length])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    step = 4 if len(samples) >= 64 else 1
+    total = 0
+    count = 0
+    for index in range(0, len(samples), step):
+        sample = samples[index]
+        total += sample * sample
+        count += 1
+    return (total / count) ** 0.5
+
+
+@dataclass(frozen=True)
+class AudioProtocolEvent:
+    kind: Literal["delta", "done"]
+    pcm: bytes = b""
+
+
+class PcmOutputAssembler:
+    """把上游 PCM 收成连续、等长的协议分片。
+
+    WebRTC 收帧本身已经是实时节拍。这里只做聚合和句末静音裁剪，不再按墙钟
+    sleep；否则客户端永远垫不起播放缓冲，任何一次发送抖动都会听成卡顿。
+    """
+
+    def __init__(
+        self,
+        chunk_bytes: int | None = None,
+        max_silence_bytes: int | None = None,
+        silence_rms: float = SILENCE_RMS_THRESHOLD,
+    ):
+        self.chunk_bytes = chunk_bytes if chunk_bytes is not None else int(SAMPLE_RATE * OUTPUT_CHUNK_SECONDS) * 2
+        self.max_silence_bytes = (
+            max_silence_bytes
+            if max_silence_bytes is not None
+            else int(SAMPLE_RATE * MAX_TRAILING_SILENCE_SECONDS) * 2
+        )
+        self.silence_rms = silence_rms
+        self._buffer = bytearray()
+        self._speaking = False
+        self._silence_bytes = 0
+
+    def push(self, pcm: bytes) -> list[AudioProtocolEvent]:
+        if not pcm:
+            return []
+        is_silence = pcm16_rms(pcm) < self.silence_rms
+        if is_silence and not self._speaking:
+            return []
+
+        if is_silence:
+            self._silence_bytes += len(pcm)
+        else:
+            self._speaking = True
+            self._silence_bytes = 0
+        self._buffer.extend(pcm)
+
+        end_utterance = is_silence and self._silence_bytes >= self.max_silence_bytes
+        events = self._flush(force=end_utterance)
+        if end_utterance:
+            events.append(AudioProtocolEvent("done"))
+            self._speaking = False
+            self._silence_bytes = 0
+        return events
+
+    def finish(self) -> list[AudioProtocolEvent]:
+        events = self._flush(force=True)
+        if self._speaking:
+            events.append(AudioProtocolEvent("done"))
+            self._speaking = False
+            self._silence_bytes = 0
+        return events
+
+    def _flush(self, force: bool) -> list[AudioProtocolEvent]:
+        events: list[AudioProtocolEvent] = []
+        while len(self._buffer) >= self.chunk_bytes:
+            chunk = bytes(self._buffer[: self.chunk_bytes])
+            del self._buffer[: self.chunk_bytes]
+            events.append(AudioProtocolEvent("delta", chunk))
+        if force and self._buffer:
+            events.append(AudioProtocolEvent("delta", bytes(self._buffer)))
+            self._buffer.clear()
+        return events
+
+
 class RealtimeSession:
     """管理一个实时语音会话的完整生命周期。
 
@@ -123,11 +221,17 @@ class RealtimeSession:
         self._tasks: list[asyncio.Task] = []
         self._dc_messages: asyncio.Queue[str] = asyncio.Queue(maxsize=DATA_CHANNEL_QUEUE_SIZE)
         self._dc_dropped_messages = 0
-        self._ws_send_lock = asyncio.Lock()
+        self._audio_out: asyncio.Queue[str] = asyncio.Queue(maxsize=AUDIO_OUT_QUEUE_SIZE)
+        self._event_out: asyncio.Queue[str] = asyncio.Queue(maxsize=EVENT_OUT_QUEUE_SIZE)
+        self._out_ready = asyncio.Event()
+        self._writer_started = False
         self._start_time = time.time()
 
     async def run(self) -> None:
         """主运行循环 — 建立连接后并发处理 WS 读/写。"""
+        writer_task = asyncio.create_task(self._ws_writer(), name="ws-writer")
+        self._tasks = [writer_task]
+        self._writer_started = True
         try:
             await self._start()
             await self._send_event("session.created", {
@@ -144,7 +248,7 @@ class RealtimeSession:
             reader_task = asyncio.create_task(self._client_reader(), name="ws-reader")
             sender_task = asyncio.create_task(self._audio_sender(), name="audio-sender")
             dc_task = asyncio.create_task(self._dc_reader(), name="dc-reader")
-            self._tasks = [reader_task, sender_task, dc_task]
+            self._tasks = [writer_task, reader_task, sender_task, dc_task]
 
             done, _ = await asyncio.wait(self._tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -392,22 +496,16 @@ class RealtimeSession:
         # PCM16 mono，因此必须显式下混；直接读取 plane 会把 L/R 交错样本当
         # 成单声道，播放时长也会翻倍。
         resampler = AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+        assembler = PcmOutputAssembler()
         recv_count = 0
-        non_silence_count = 0
-        silence_count = 0
-        speaking = False
-        next_send_at: float | None = None
-        # 兼顾 JSON/base64 开销和交互延迟，聚合约 60ms 音频。WebRTC 直连
-        # 不经过这里；这是兼容 WebSocket 路径的抖动缓冲。
-        output_buffer = bytearray()
-        output_chunk_bytes = int(SAMPLE_RATE * 0.06) * 2
 
-        async def flush_output(force: bool = False) -> None:
-            if not output_buffer or (not force and len(output_buffer) < output_chunk_bytes):
-                return
-            audio_b64 = base64.b64encode(output_buffer).decode("ascii")
-            output_buffer.clear()
-            await self._send_event("response.audio.delta", {"delta": audio_b64})
+        async def emit(events: list[AudioProtocolEvent]) -> None:
+            for event in events:
+                if event.kind == "delta":
+                    audio_b64 = base64.b64encode(event.pcm).decode("ascii")
+                    await self._send_event("response.audio.delta", {"delta": audio_b64})
+                else:
+                    await self._send_event("response.audio.done", {})
 
         while not self._closed:
             try:
@@ -421,52 +519,16 @@ class RealtimeSession:
 
             recv_count += 1
             for output_frame, pcm_bytes in resample_to_pcm16_mono(resampler, frame):
-
-                samples_check = np.frombuffer(pcm_bytes, dtype="<i2").astype(np.float32)
-                rms = float(np.sqrt(np.mean(np.square(samples_check))))
-                is_silence = rms < 100
-
                 if recv_count <= 3 or recv_count % 500 == 0:
                     logger.info(
                         f"[realtime] Remote audio frame #{recv_count}: "
                         f"source={frame.format.name}/{frame.layout.name}/{frame.sample_rate}Hz/{frame.samples}, "
                         f"output=s16/mono/{output_frame.sample_rate}Hz/{output_frame.samples}, "
-                        f"rms={rms:.0f}, non_silence_total={non_silence_count}"
+                        f"rms={pcm16_rms(pcm_bytes):.0f}"
                     )
+                await emit(assembler.push(pcm_bytes))
 
-                if is_silence:
-                    if not speaking:
-                        continue
-                    silence_count += 1
-                else:
-                    non_silence_count += 1
-                    silence_count = 0
-                    if not speaking:
-                        speaking = True
-
-                # 说话段中保留最多 500ms 静音，维持词句的正确时间关系；空闲
-                # 静音则不推送，避免客户端永久累积播放队列。
-                if silence_count > 25:
-                    await flush_output(force=True)
-                    speaking = False
-                    silence_count = 0
-                    next_send_at = None
-                    await self._send_event("response.audio.done", {})
-                    continue
-
-                loop = asyncio.get_running_loop()
-                now = loop.time()
-                frame_duration = output_frame.samples / output_frame.sample_rate
-                if next_send_at is None:
-                    next_send_at = now
-                else:
-                    next_send_at = max(next_send_at + frame_duration, now)
-                    await asyncio.sleep(max(0.0, next_send_at - now))
-
-                output_buffer.extend(pcm_bytes)
-                await flush_output()
-
-        await flush_output(force=True)
+        await emit(assembler.finish())
 
     async def _dc_reader(self) -> None:
         """读取 DataChannel 消息并转发给客户端。"""
@@ -498,13 +560,53 @@ class RealtimeSession:
             except (json.JSONDecodeError, TypeError):
                 await self._send_event("datachannel.message", {"raw": msg[:1000]})
 
+    async def _ws_writer(self) -> None:
+        """单写者：音频优先于转写/遥测，避免共用锁把播报卡出缺口。"""
+        while not self._closed:
+            if self._audio_out.empty() and self._event_out.empty():
+                self._out_ready.clear()
+                if self._audio_out.empty() and self._event_out.empty():
+                    try:
+                        await asyncio.wait_for(self._out_ready.wait(), timeout=2)
+                    except asyncio.TimeoutError:
+                        continue
+                continue
+            try:
+                payload = (
+                    self._audio_out.get_nowait()
+                    if not self._audio_out.empty()
+                    else self._event_out.get_nowait()
+                )
+            except asyncio.QueueEmpty:
+                continue
+            try:
+                await self._ws.send_text(payload)
+            except Exception as exc:
+                if not self._closed:
+                    logger.debug(f"[realtime] WebSocket send stopped: {exc}")
+                return
+
     async def _send_event(self, event_type: str, data: dict) -> None:
         if self._closed:
             return
-        payload = {"type": event_type, **data}
+        payload = json.dumps({"type": event_type, **data})
         try:
-            async with self._ws_send_lock:
-                await self._ws.send_text(json.dumps(payload))
+            if not self._writer_started:
+                await self._ws.send_text(payload)
+                return
+            if event_type.startswith("response.audio."):
+                await self._audio_out.put(payload)
+            else:
+                if self._event_out.full():
+                    try:
+                        self._event_out.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                try:
+                    self._event_out.put_nowait(payload)
+                except asyncio.QueueFull:
+                    return
+            self._out_ready.set()
         except Exception as exc:
             if not self._closed:
                 logger.debug(f"[realtime] WebSocket send stopped: {exc}")
@@ -519,6 +621,7 @@ class RealtimeSession:
         if self._closed:
             return
         self._closed = True
+        self._out_ready.set()
 
         pending_tasks = [task for task in self._tasks if not task.done()]
         for task in pending_tasks:
