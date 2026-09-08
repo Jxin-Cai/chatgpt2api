@@ -84,6 +84,9 @@ EDITABLE_FILE_CLIENT_VERSION = "prod-bede35f9dcd856d080e012478f0c1031faa2588e"
 EDITABLE_FILE_CLIENT_BUILD_NUMBER = "6631702"
 EDITABLE_FILE_PSD_OUTPUT_DIR = "data/files/psd"
 EDITABLE_FILE_PPT_OUTPUT_DIR = "data/files/ppt"
+WORK_MODE_POLL_TIMEOUT_SECS = 300.0
+WORK_MODE_POLL_INTERVAL_SECS = 1.0
+WORK_MODE_DONE_STATUSES = {"finished_successfully", "finished", "failed", "cancelled"}
 EDITABLE_FILE_PPT_PROMPT = """我需要你根据用户的需求，来制作一个可以编辑的PPT，你可以使用Agent来做，你不要再继续询问用户问题，内容风格、版式、配色、内容结构和页面信息你可以自行补充并直接执行。整体的流程如下：
 1. 用生图的方式，帮我生成一个精美的产品介绍ppt，5-6个页面
 2. 帮我把以上涉及到的所有图像和形状素材拆分成单独png，每个素材单独一张图片，不要有遗漏，让我可以直接在ppt里拼接素材还原，不要文字
@@ -2600,10 +2603,96 @@ class OpenAIBackendAPI:
             stream=True,
         )
         ensure_ok(response, path)
+        handoff_conversation_id = ""
+        stream_conversation_id = ""
         try:
-            yield from iter_sse_payloads(response)
+            for payload in iter_sse_payloads(response):
+                if payload == "[DONE]" and handoff_conversation_id:
+                    break
+                if payload != "[DONE]":
+                    try:
+                        event = json.loads(payload)
+                    except (TypeError, json.JSONDecodeError):
+                        event = None
+                    if isinstance(event, dict):
+                        stream_conversation_id = str(
+                            event.get("conversation_id") or stream_conversation_id
+                        ).strip()
+                        if event.get("type") == "stream_handoff":
+                            handoff_conversation_id = str(
+                                event.get("conversation_id") or stream_conversation_id
+                            ).strip()
+                yield payload
         finally:
             response.close()
+        if handoff_conversation_id:
+            yield from self._poll_handoff_conversation(handoff_conversation_id)
+            yield "[DONE]"
+
+    @staticmethod
+    def _latest_visible_assistant_message(conversation: Dict[str, Any]) -> Dict[str, Any] | None:
+        messages = []
+        for node in (conversation.get("mapping") or {}).values():
+            message = (node or {}).get("message") or {}
+            author = message.get("author") if isinstance(message.get("author"), dict) else {}
+            if str(author.get("role") or "").strip().lower() != "assistant":
+                continue
+            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+            if metadata.get("is_visually_hidden_from_conversation") is True:
+                continue
+            recipient = str(message.get("recipient") or "").strip().lower()
+            if recipient and recipient != "all":
+                continue
+            channel = str(message.get("channel") or "").strip().lower()
+            if channel and channel != "final":
+                continue
+            messages.append(message)
+        if not messages:
+            return None
+        return max(messages, key=lambda item: float(item.get("create_time") or 0.0))
+
+    def _poll_handoff_conversation(
+        self,
+        conversation_id: str,
+        timeout_secs: float = WORK_MODE_POLL_TIMEOUT_SECS,
+        poll_interval_secs: float = WORK_MODE_POLL_INTERVAL_SECS,
+    ) -> Iterator[str]:
+        """Convert a Work Mode stream handoff into ordinary conversation events."""
+        deadline = time.time() + timeout_secs
+        last_fingerprint = ""
+        while time.time() < deadline:
+            try:
+                conversation = self._get_conversation(conversation_id)
+            except UpstreamHTTPError as exc:
+                if exc.status_code in {404, 409, 423, 429, 500, 502, 503, 504}:
+                    time.sleep(poll_interval_secs)
+                    continue
+                raise
+            message = self._latest_visible_assistant_message(conversation)
+            if message is not None:
+                status = str(message.get("status") or "").strip().lower()
+                fingerprint = json.dumps(
+                    {
+                        "status": status,
+                        "end_turn": message.get("end_turn"),
+                        "content": message.get("content"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                if fingerprint != last_fingerprint:
+                    last_fingerprint = fingerprint
+                    yield json.dumps(
+                        {"message": message, "conversation_id": conversation_id},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                if message.get("end_turn") is True or status in WORK_MODE_DONE_STATUSES:
+                    return
+            time.sleep(poll_interval_secs)
+        raise RuntimeError(f"timed out waiting for Work Mode result: {conversation_id}")
 
     def _report_progress(self, step: str) -> None:
         """Report progress step to the callback if set."""
@@ -2757,7 +2846,7 @@ class OpenAIBackendAPI:
     def list_models(self) -> Dict[str, Any]:
         """返回当前模式下可用模型，格式对齐 OpenAI `/v1/models`。"""
         self._bootstrap()
-        path = "/backend-api/models?history_and_training_disabled=false" if self.access_token else (
+        path = "/backend-api/models?history_and_training_disabled=true" if self.access_token else (
             "/backend-anon/models?iim=false&is_gizmo=false"
         )
         route = "/backend-api/models" if self.access_token else "/backend-anon/models"

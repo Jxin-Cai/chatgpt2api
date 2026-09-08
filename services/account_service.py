@@ -1071,25 +1071,20 @@ class AccountService:
     ) -> str:
         excluded = set(excluded_tokens or set())
         requested_model = str(model or "auto").strip() or "auto"
-        route = None
-        if requested_model != "auto":
-            from services.model_service import model_catalog_service
+        from services.model_service import model_catalog_service
 
-            route = model_catalog_service.route_for_model(requested_model)
+        route = model_catalog_service.route_for_model(requested_model)
         with self._lock:
             candidates = [
                 token
                 for account in self._accounts.values()
                 if account.get("status") not in {"禁用", "异常"}
-                   and (
-                       route is None
-                       or self._normalize_account_type(account.get("type")) in route.account_types
-                   )
+                   and self._normalize_account_type(account.get("type")) in route.account_types
                    and (token := account.get("access_token") or "")
                    and token not in excluded
             ]
             if not candidates:
-                if route is None or route.allow_anonymous:
+                if route.allow_anonymous:
                     return ""
                 from services.model_service import ModelUnavailableError
 

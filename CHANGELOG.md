@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [修复] 根据活动账号的 ChatGPT Web 实时模型目录桥接 Codex 客户端模型名，例如优先将 `gpt-5.6-sol` 映射到 Web 的 `gpt-5.6-sol-wm`，并续接 Work Mode 的 `stream_handoff` 结果；排除仅可枚举但无法对话的匿名模型，让 `/v1/models` 只暴露可路由模型和别名。
+
 ## 1.8.0 - 2026-07-28
 
 + [新增] 新增默认请求上游模型名称和默认思考强度配置，支持在设置页面修改，并可通过模型名的 `-standard`、`-extended`、`-max` 后缀覆盖思考强度。

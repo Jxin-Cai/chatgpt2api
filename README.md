@@ -120,8 +120,7 @@ environment:
 - 兼容面向图片场景的 `POST /v1/chat/completions`
 - 兼容面向图片场景的 `POST /v1/responses`
 - 提供对齐 OpenAI Realtime API（GA）形状的实时语音接口：`/v1/realtime/client_secrets` + `/v1/realtime/calls`，另有语音列表、能力发现、文字注入和 WebSocket 音频桥接接口
-- `GET /v1/models` 返回 `gpt-image-2`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、
-  `gpt-5-mini`
+- `GET /v1/models` 动态返回 ChatGPT Web 当前实际可用的模型，以及有可用上游目标的兼容别名
 - 支持通过 `n` 返回多张生成结果
 - 支持生成可编辑 PPT 文件
 - 支持生成可编辑 PSD 文件
@@ -184,7 +183,7 @@ Authorization: Bearer <auth-key>
 <summary><code>GET /v1/models</code></summary>
 <br>
 
-返回当前暴露的图片模型列表。
+返回当前可用的文本与图片模型列表。文本模型来自活动账号的 ChatGPT Web 实时模型目录；兼容别名只会在对应的 Web 模型可用时出现。匿名模型目录不会计入，因为它可能列出匿名对话实际无权调用的模型。
 
 ```bash
 curl http://localhost:8000/v1/models \
@@ -197,7 +196,7 @@ curl http://localhost:8000/v1/models \
 
 | 字段   | 说明                                                                                                         |
 |:-----|:-----------------------------------------------------------------------------------------------------------|
-| 返回模型 | `gpt-image-2`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini` |
+| 返回模型 | 根据当前活动账号动态汇总；例如 Web 提供 `gpt-5.6-sol-wm` 时，同时提供可桥接别名 `gpt-5.6-sol` |
 | 接入场景 | 可接入 Cherry Studio、New API 等上游或客户端                                                                          |
 
 <br>
@@ -318,6 +317,8 @@ curl http://localhost:8000/v1/chat/completions \
 | `stream`             | 文本、搜索和图片场景均支持，仍在测试                                                           |
 | `tools`              | 文本场景支持 `web_search` / `web_search_preview` / `web_search_preview_2025_03_11` |
 | `web_search_options` | 传入时会触发网页搜索兼容逻辑                                                               |
+
+文本请求会把 Codex 客户端模型名桥接到 Web 实际 slug。例如 Web 模型目录包含 `gpt-5.6-sol-wm` 时，`gpt-5.6-sol` 会优先转发为该模型；只有对应 Work Mode slug 不存在时才回退到同版本通用模型。Work Mode 返回 `stream_handoff` 时会继续轮询 conversation 结果并转换为普通 Chat Completions 输出。API 响应中的 `model` 仍回显客户端请求值。
 
 <br>
 </details>

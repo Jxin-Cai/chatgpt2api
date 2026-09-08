@@ -44,10 +44,15 @@ class TextAccountRoutingTests(unittest.TestCase):
 
         self.assertEqual(token, "pro")
 
-    def test_auto_model_keeps_existing_unfiltered_rotation(self) -> None:
+    def test_auto_model_rotates_only_across_accounts_that_advertise_auto(self) -> None:
+        route = ModelRoute(
+            account_types=frozenset({"free", "Plus", "Pro"}),
+            allow_anonymous=False,
+            upstream_model="auto",
+        )
         with mock.patch(
             "services.model_service.model_catalog_service.route_for_model",
-            side_effect=AssertionError("auto must not load the model catalog"),
+            return_value=route,
         ):
             tokens = {
                 self.service.get_text_access_token(model="auto"),
@@ -104,6 +109,25 @@ class TextProtocolRoutingTests(unittest.TestCase):
             openai_v1_chat_complete.handle(body)
 
         backend.assert_called_once_with("pro-chat")
+
+    def test_conversation_bridges_codex_client_model_to_web_slug(self) -> None:
+        backend = mock.Mock()
+        backend.stream_conversation.return_value = iter(())
+        with mock.patch(
+            "services.model_service.model_catalog_service.resolve_model",
+            return_value="gpt-5.6-sol-wm",
+        ) as resolver:
+            list(conversation.conversation_events(
+                backend,
+                messages=[{"role": "user", "content": "hello"}],
+                model="gpt-5.6-sol",
+            ))
+
+        resolver.assert_called_once_with("gpt-5.6-sol")
+        self.assertEqual(
+            backend.stream_conversation.call_args.kwargs["model"],
+            "gpt-5.6-sol-wm",
+        )
 
     def test_responses_passes_requested_model_to_text_backend(self) -> None:
         body = {"model": "pro-response", "input": "route response"}
