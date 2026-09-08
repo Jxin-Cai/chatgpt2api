@@ -321,7 +321,7 @@ curl http://localhost:8000/v1/chat/completions \
 | `web_search_options` | 支持 `search_context_size` 和 approximate `user_location`，并保留多轮上下文                              |
 | `reasoning_effort`   | 支持 `none`、`low`、`medium`、`high`、`xhigh`；自动映射到 Web 当前公布的 `standard` / `extended` 档位          |
 
-文本请求会把 Codex 客户端模型名桥接到 Web 实际 slug。例如 Web 模型目录包含 `gpt-5.6-sol-wm` 时，`gpt-5.6-sol` 会优先转发为该模型；只有对应 Work Mode slug 不存在时才回退到同版本通用模型。Work Mode 返回 `stream_handoff` 时会继续轮询 conversation 结果并转换为普通 Chat Completions 输出。API 响应中的 `model` 仍回显客户端请求值。
+文本请求会把 Codex 客户端模型名桥接到语义相同的 Web slug。例如 Web 模型目录包含 `gpt-5.6-sol-wm` 时，`gpt-5.6-sol` 会转发为该模型。桥接只处理点号/短横线和 `-wm` 等命名差异；目标模型不存在时直接返回不可用错误，不会降级到 Sol 或其他模型。Work Mode 返回 `stream_handoff` 时会继续轮询 conversation 结果并转换为普通 Chat Completions 输出。API 响应中的 `model` 仍回显客户端请求值。
 
 函数工具通过 ChatGPT Web 模型生成调用参数，并按 OpenAI 格式返回 `message.tool_calls` / 流式 `delta.tool_calls` 和 `finish_reason: "tool_calls"`；客户端执行后可把结果作为 `role: "tool"` 消息再次提交，模型会继续生成最终回答。函数由客户端执行，本项目不会代替客户端运行任意函数。Web Search 则由 ChatGPT Web 的原生 `force_use_search` 链路执行，返回最终正文与 URL citations。当前不允许在同一次请求中混用托管 Web Search 和客户端函数工具，以免产生不明确的执行顺序。
 

@@ -24,15 +24,10 @@ class ModelUnavailableError(RuntimeError):
     pass
 
 
-# Codex clients expose product-facing model names while ChatGPT Web expects the
-# slugs returned by authenticated /backend-api/models. Aliases are advertised and
-# accepted only when their target slug is present in the live Web catalog.
-CLIENT_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
-    "gpt-5.6-sol": ("gpt-5.6-sol-wm", "gpt-5-6-thinking", "gpt-5-6"),
-    "gpt-5.6-sol-wm": ("gpt-5-6-thinking", "gpt-5-6"),
-    "gpt-5.6-terra": ("gpt-5.6-terra-wm", "gpt-5-6"),
-    "gpt-5.6-luna": ("gpt-5.6-luna-wm", "gpt-5-6-instant", "gpt-5-6-mini", "gpt-5-6"),
-}
+# Codex clients expose dotted product-facing names while ChatGPT Web may use
+# hyphenated slugs and a ``-wm`` suffix. Only syntax-equivalent aliases are
+# allowed: substituting a different model would silently run the request on the
+# wrong model (usually the account's default Sol model).
 _DOTTED_MODEL_RE = re.compile(r"^(gpt-\d+)\.(\d+)(.*)$")
 _WEB_MODEL_RE = re.compile(r"^gpt-(\d+)-(\d+)(.*)$")
 _WORK_MODE_MODEL_RE = re.compile(r"^gpt-\d+(?:\.\d+)?-(?:sol|terra|luna|astra)-wm$")
@@ -44,7 +39,6 @@ def _model_alias_candidates(model: str) -> tuple[str, ...]:
     candidates = []
     if _CLIENT_WORK_MODE_ALIAS_RE.fullmatch(normalized):
         candidates.append(f"{normalized}-wm")
-    candidates.extend(CLIENT_MODEL_ALIASES.get(normalized, ()))
     dotted = _DOTTED_MODEL_RE.fullmatch(normalized)
     if dotted:
         candidates.append(f"{dotted.group(1)}-{dotted.group(2)}{dotted.group(3)}")
@@ -75,12 +69,6 @@ def _available_model_aliases(available_models: set[str]) -> dict[str, str]:
         alias = f"gpt-{match.group(1)}.{match.group(2)}{match.group(3)}"
         if alias not in available_models:
             aliases[alias] = upstream_model
-    for alias, candidates in CLIENT_MODEL_ALIASES.items():
-        if alias in available_models:
-            continue
-        target = next((candidate for candidate in candidates if candidate in available_models), "")
-        if target and alias not in aliases:
-            aliases[alias] = target
     return aliases
 
 

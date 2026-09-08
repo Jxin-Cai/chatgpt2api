@@ -182,23 +182,26 @@ class ModelCatalogServiceTests(unittest.TestCase):
             frozenset(),
         )
 
-    def test_codex_client_alias_is_advertised_and_resolved_only_when_web_target_exists(self) -> None:
+    def test_compatibility_aliases_never_substitute_a_different_model(self) -> None:
         self.outcomes["free-good"] = model_list("gpt-5-6", "gpt-5-6-mini")
 
         result = self.catalog.list_models()
 
         models = {item["id"]: item for item in result["data"]}
-        self.assertEqual(models["gpt-5.6-sol"]["root"], "gpt-5-6")
-        self.assertEqual(models["gpt-5.6-sol-wm"]["root"], "gpt-5-6")
-        self.assertEqual(models["gpt-5.6-terra"]["root"], "gpt-5-6")
-        self.assertEqual(models["gpt-5.6-luna"]["root"], "gpt-5-6-mini")
         self.assertEqual(models["gpt-5.6"]["root"], "gpt-5-6")
+        self.assertEqual(models["gpt-5.6-mini"]["root"], "gpt-5-6-mini")
+        self.assertNotIn("gpt-5.6-sol", models)
+        self.assertNotIn("gpt-5.6-sol-wm", models)
+        self.assertNotIn("gpt-5.6-terra", models)
+        self.assertNotIn("gpt-5.6-luna", models)
         self.assertNotIn("gpt-5.4", models)
 
-        route = self.catalog.route_for_model("gpt-5.6-sol")
-        self.assertEqual(route.upstream_model, "gpt-5-6")
-        self.assertEqual(route.account_types, frozenset({"free"}))
-        self.assertFalse(route.allow_anonymous)
+        for requested in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+            with self.subTest(requested=requested):
+                route = self.catalog.route_for_model(requested)
+                self.assertEqual(route.upstream_model, requested)
+                self.assertFalse(route.account_types)
+                self.assertFalse(route.allow_anonymous)
 
     def test_unknown_client_model_is_not_silently_downgraded(self) -> None:
         self.outcomes["free-good"] = model_list("gpt-5-5")
