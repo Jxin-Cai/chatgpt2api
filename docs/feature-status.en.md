@@ -9,6 +9,9 @@
 | 面向图片工作流的 `POST /v1/chat/completions` | ✅  | 已支持图片相关请求。 |
 | 面向图片工作流的 `POST /v1/responses` | ✅  | 已支持图片生成工具调用。 |
 | `GET /v1/models` 接口 | ✅  | 动态汇总 ChatGPT Web 当前实际可用的模型；只有存在可用 Web 目标时才返回 Codex/OpenAI 兼容别名。 |
+| Chat Completions 函数工具调用 | ✅  | 支持 `tools`、`tool_choice`、`parallel_tool_calls`、非流式/流式 `tool_calls`，以及客户端回传 `role=tool` 后续轮。 |
+| Chat Completions Web Search | ✅  | 使用 ChatGPT Web 原生搜索链路，保留多轮上下文、搜索选项、最终正文和 URL citations；流式请求会先返回 role chunk 避免长时间静默。 |
+| Chat Completions 推理摘要 | ✅  | `reasoning_effort` 会映射到 Web 可用档位；Web 面向用户展示的 `reasoning_recap` 通过非流式 `message.reasoning_content` / 流式 `delta.reasoning_content` 返回，隐藏原始思维链不透出。 |
 | 同时生成多张图片 | ✅  | 已支持，后端与前端都可进行多图生成。 |
 | 图片并行生成 | ✅  | 多张图片使用独立线程和账号同时生成，可通过 `image_parallel_generation` 配置关闭。 |
 | 图片生成进度追踪 | ✅  | 任务显示当前步骤（上传/预热/获取token/生成中等），支持耗时统计。 |

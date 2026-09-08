@@ -40,6 +40,13 @@ class ChatCompletionRequest(BaseModel):
     stream: bool | None = None
     modalities: list[str] | None = None
     messages: list[dict[str, object]] | None = None
+    tools: list[dict[str, object]] | None = None
+    tool_choice: object | None = None
+    parallel_tool_calls: bool | None = None
+    web_search_options: dict[str, object] | None = None
+    reasoning_effort: str | None = None
+    reasoning: dict[str, object] | None = None
+    thinking_effort: str | None = None
 
 
 class ResponseCreateRequest(BaseModel):

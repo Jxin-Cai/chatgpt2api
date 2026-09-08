@@ -16,6 +16,7 @@ CACHEABLE_TEXT_KEYS = {
     "max_tokens",
     "metadata",
     "model",
+    "parallel_tool_calls",
     "presence_penalty",
     "reasoning_effort",
     "response_format",

@@ -81,6 +81,102 @@ class WorkModeHandoffTests(unittest.TestCase):
         self.assertEqual(event["message"]["content"]["parts"], ["BRIDGE_OK"])
         self.assertEqual(event["conversation_id"], "conversation-1")
 
+    def test_poll_handoff_emits_reasoning_recap_before_final_message(self) -> None:
+        finished = {
+            "mapping": {
+                "reasoning": {"message": {
+                    "id": "reasoning-1",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "reasoning_recap", "content": "思考了三秒"},
+                    "status": "finished_successfully",
+                    "recipient": "all",
+                    "create_time": 1,
+                }},
+                "final": {"message": {
+                    "id": "final-1",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "text", "parts": ["BRIDGE_OK"]},
+                    "status": "finished_successfully",
+                    "end_turn": True,
+                    "recipient": "all",
+                    "channel": "final",
+                    "create_time": 2,
+                }},
+            },
+        }
+        self.backend._get_conversation = mock.Mock(return_value=finished)
+
+        events = [json.loads(event) for event in self.backend._poll_handoff_conversation("conversation-1")]
+
+        self.assertEqual(events[0]["message"]["content"]["content_type"], "reasoning_recap")
+        self.assertEqual(events[1]["message"]["content"]["parts"], ["BRIDGE_OK"])
+
+    def test_poll_handoff_does_not_finish_on_previous_turn_assistant(self) -> None:
+        waiting = {
+            "current_node": "current-user",
+            "mapping": {
+                "old-user": {"parent": None, "message": {
+                    "id": "old-user",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["first"]},
+                }},
+                "old-assistant": {"parent": "old-user", "message": {
+                    "id": "old-assistant",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "text", "parts": ["OLD"]},
+                    "status": "finished_successfully",
+                    "end_turn": True,
+                    "recipient": "all",
+                }},
+                "current-user": {"parent": "old-assistant", "message": {
+                    "id": "current-user",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["second"]},
+                }},
+            },
+        }
+        finished = {
+            **waiting,
+            "current_node": "current-final",
+            "mapping": {
+                **waiting["mapping"],
+                "current-final": {"parent": "current-user", "message": {
+                    "id": "current-final",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "text", "parts": ["NEW"]},
+                    "status": "finished_successfully",
+                    "end_turn": True,
+                    "recipient": "all",
+                    "channel": "final",
+                }},
+            },
+        }
+        self.backend._get_conversation = mock.Mock(side_effect=[waiting, finished])
+
+        with mock.patch("services.openai_backend_api.time.sleep"):
+            events = [json.loads(event) for event in self.backend._poll_handoff_conversation("conversation-1")]
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["message"]["content"]["parts"], ["NEW"])
+
+    def test_web_reasoning_effort_is_mapped_to_advertised_values(self) -> None:
+        self.assertEqual(self.backend._normalize_thinking_effort("low"), "standard")
+        self.assertEqual(self.backend._normalize_thinking_effort("medium"), "standard")
+        self.assertEqual(self.backend._normalize_thinking_effort("high"), "extended")
+        self.assertEqual(self.backend._normalize_thinking_effort("xhigh"), "extended")
+        self.assertEqual(self.backend._normalize_thinking_effort("max"), "extended")
+
+    def test_conversation_payload_requests_visible_reasoning_recap(self) -> None:
+        payload = self.backend._conversation_payload(
+            [{"role": "user", "content": "hello"}],
+            "gpt-5-6-thinking",
+            "Asia/Shanghai",
+            thinking_effort="high",
+        )
+
+        self.assertEqual(payload["thinking_effort"], "extended")
+        self.assertEqual(payload["paragen_cot_summary_display_override"], "allow")
+
 
 if __name__ == "__main__":
     unittest.main()

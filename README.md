@@ -287,7 +287,7 @@ curl http://localhost:8000/v1/images/edits \
 <summary><code>POST /v1/chat/completions</code></summary>
 <br>
 
-面向文本、网页搜索与图片场景的 Chat Completions 兼容接口，不是完整通用聊天代理。
+面向文本、函数工具、网页搜索与图片场景的 Chat Completions 兼容接口。
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
@@ -315,10 +315,17 @@ curl http://localhost:8000/v1/chat/completions \
 | `messages`           | 消息数组，支持文本、搜索和图片请求内容                                                          |
 | `n`                  | 图片生成数量，按当前实现解析为图片数量                                                          |
 | `stream`             | 文本、搜索和图片场景均支持，仍在测试                                                           |
-| `tools`              | 文本场景支持 `web_search` / `web_search_preview` / `web_search_preview_2025_03_11` |
-| `web_search_options` | 传入时会触发网页搜索兼容逻辑                                                               |
+| `tools`              | 支持 OpenAI `function` 工具，以及 `web_search` / `web_search_preview` / `web_search_preview_2025_03_11` |
+| `tool_choice`        | 函数工具支持 `auto`、`none`、`required` 和指定函数；Web 搜索工具可由该字段关闭或指定                         |
+| `parallel_tool_calls`| 控制函数桥接是否允许一次返回多个 `tool_calls`                                                       |
+| `web_search_options` | 支持 `search_context_size` 和 approximate `user_location`，并保留多轮上下文                              |
+| `reasoning_effort`   | 支持 `none`、`low`、`medium`、`high`、`xhigh`；自动映射到 Web 当前公布的 `standard` / `extended` 档位          |
 
 文本请求会把 Codex 客户端模型名桥接到 Web 实际 slug。例如 Web 模型目录包含 `gpt-5.6-sol-wm` 时，`gpt-5.6-sol` 会优先转发为该模型；只有对应 Work Mode slug 不存在时才回退到同版本通用模型。Work Mode 返回 `stream_handoff` 时会继续轮询 conversation 结果并转换为普通 Chat Completions 输出。API 响应中的 `model` 仍回显客户端请求值。
+
+函数工具通过 ChatGPT Web 模型生成调用参数，并按 OpenAI 格式返回 `message.tool_calls` / 流式 `delta.tool_calls` 和 `finish_reason: "tool_calls"`；客户端执行后可把结果作为 `role: "tool"` 消息再次提交，模型会继续生成最终回答。函数由客户端执行，本项目不会代替客户端运行任意函数。Web Search 则由 ChatGPT Web 的原生 `force_use_search` 链路执行，返回最终正文与 URL citations。当前不允许在同一次请求中混用托管 Web Search 和客户端函数工具，以免产生不明确的执行顺序。
+
+推理模型会请求 ChatGPT Web 返回其面向用户展示的 `reasoning_recap`，并在非流式响应的 `message.reasoning_content`、流式响应的 `delta.reasoning_content` 中单独返回；普通文本、函数调用和 Web Search 路径均保持该结构。该字段是本项目为常见 Chat Completions 客户端提供的兼容扩展。上游不公开原始 reasoning tokens，因此这里不会返回或伪造隐藏思维链；若 Web 只返回“思考了几秒”等简短 recap，API 也只会如实返回该摘要。
 
 <br>
 </details>

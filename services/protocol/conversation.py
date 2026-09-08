@@ -320,6 +320,9 @@ class ConversationRequest:
 class ConversationState:
     text: str = ""
     raw_text: str = ""
+    reasoning_text: str = ""
+    raw_reasoning_text: str = ""
+    active_output: str = ""
     conversation_id: str = ""
     file_ids: list[str] = field(default_factory=list)
     sediment_ids: list[str] = field(default_factory=list)
@@ -387,6 +390,49 @@ def assistant_message_text(message: dict[str, Any]) -> str:
     return ""
 
 
+def assistant_message_content_type(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if not isinstance(content, dict):
+        return ""
+    return str(content.get("content_type") or "").strip().lower()
+
+
+def reasoning_message_text(message: dict[str, Any]) -> str:
+    """Extract only the user-visible summary, never raw model reasoning."""
+    if assistant_message_content_type(message) != "reasoning_recap":
+        return ""
+    content = message.get("content") or {}
+    parts: list[str] = []
+    direct_content = content.get("content")
+    if isinstance(direct_content, str):
+        parts.append(direct_content)
+    direct_text = content.get("text")
+    if isinstance(direct_text, str):
+        parts.append(direct_text)
+    for part in content.get("parts") or []:
+        if isinstance(part, str):
+            parts.append(part)
+        elif isinstance(part, dict):
+            for key in ("text", "summary", "content"):
+                value = part.get(key)
+                if isinstance(value, str):
+                    parts.append(value)
+    return "\n".join(part.strip() for part in parts if part.strip()).strip()
+
+
+def is_reasoning_recap_message(message: dict[str, Any]) -> bool:
+    if assistant_message_content_type(message) != "reasoning_recap":
+        return False
+    author = message.get("author")
+    if not isinstance(author, dict) or str(author.get("role") or "").strip().lower() != "assistant":
+        return False
+    metadata = message.get("metadata") or {}
+    if isinstance(metadata, dict) and metadata.get("is_visually_hidden_from_conversation") is True:
+        return False
+    recipient = str(message.get("recipient") or "").strip().lower()
+    return not recipient or recipient == "all"
+
+
 def is_visible_assistant_message(message: dict[str, Any]) -> bool:
     """Return whether an upstream assistant message is intended for the user."""
     author = message.get("author")
@@ -409,6 +455,12 @@ def is_visible_assistant_message(message: dict[str, Any]) -> bool:
     # Reasoning and other internal channels must not leak into API text output.
     channel = str(message.get("channel") or "").strip().lower()
     if channel and channel != "final":
+        return False
+
+    # A reasoning recap is user-visible but belongs in reasoning_content, not
+    # in the final answer text. Raw thoughts/analysis are intentionally never
+    # accepted here.
+    if assistant_message_content_type(message) in {"reasoning_recap", "thoughts"}:
         return False
 
     return True
@@ -485,6 +537,30 @@ def assistant_raw_text(event: dict[str, Any], current_text: str = "", history_te
         if text:
             return strip_history(text, history_text)
     return apply_text_patch(event, current_text, history_text)
+
+
+def event_output_kind(event: dict[str, Any]) -> str:
+    for candidate in (event, event.get("v")):
+        if not isinstance(candidate, dict):
+            continue
+        message = candidate.get("message")
+        if not isinstance(message, dict):
+            continue
+        if is_reasoning_recap_message(message):
+            return "reasoning"
+        if is_visible_assistant_message(message):
+            return "content"
+    return ""
+
+
+def reasoning_raw_text(event: dict[str, Any], current_text: str = "") -> str:
+    for candidate in (event, event.get("v")):
+        if not isinstance(candidate, dict):
+            continue
+        message = candidate.get("message")
+        if isinstance(message, dict) and is_reasoning_recap_message(message):
+            return reasoning_message_text(message)
+    return apply_text_patch(event, current_text)
 
 
 def assistant_text(event: dict[str, Any], current_text: str = "", history_text: str = "") -> str:
@@ -639,6 +715,7 @@ def conversation_base_event(event_type: str, state: ConversationState, **extra: 
     return {
         "type": event_type,
         "text": state.text,
+        "reasoning_text": state.reasoning_text,
         "conversation_id": state.conversation_id,
         "file_ids": list(state.file_ids),
         "sediment_ids": list(state.sediment_ids),
@@ -671,7 +748,31 @@ def iter_conversation_payloads(payloads: Iterator[str], history_text: str = "",
             yield conversation_base_event("conversation.event", state, raw=event)
             continue
         update_conversation_state(state, payload, event)
-        if history_index < len(history_messages) and event_assistant_text(event, history_text) == history_messages[history_index]:
+        output_kind = event_output_kind(event)
+        if output_kind:
+            state.active_output = output_kind
+        if state.active_output == "reasoning":
+            next_raw_reasoning = reasoning_raw_text(event, state.raw_reasoning_text)
+            next_reasoning = sanitize_output_text(next_raw_reasoning)
+            state.raw_reasoning_text = next_raw_reasoning
+            if next_reasoning != state.reasoning_text:
+                delta = (
+                    next_reasoning[len(state.reasoning_text):]
+                    if next_reasoning.startswith(state.reasoning_text)
+                    else next_reasoning
+                )
+                state.reasoning_text = next_reasoning
+                yield conversation_base_event(
+                    "conversation.reasoning.delta",
+                    state,
+                    raw=event,
+                    delta=delta,
+                )
+                continue
+            if output_kind == "reasoning":
+                yield conversation_base_event("conversation.event", state, raw=event)
+                continue
+        if history_index < len(history_messages) and event_assistant_text(event) == history_messages[history_index]:
             history_index += 1
             state.raw_text = ""
             state.text = ""
@@ -722,7 +823,7 @@ def text_backend(model: str = "auto") -> OpenAIBackendAPI:
     return OpenAIBackendAPI(access_token=account_service.get_text_access_token(model=model))
 
 
-def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[str]:
+def stream_text_parts(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[tuple[str, str]]:
     attempted_tokens: set[str] = set()
     token = getattr(backend, "access_token", "")
     emitted = False
@@ -741,12 +842,13 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                 prompt=request.prompt,
                 thinking_effort=request.thinking_effort,
             ):
-                if event.get("type") != "conversation.delta":
+                event_type = str(event.get("type") or "")
+                if event_type not in {"conversation.delta", "conversation.reasoning.delta"}:
                     continue
                 delta = str(event.get("delta") or "")
                 if delta:
                     emitted = True
-                    yield delta
+                    yield ("reasoning" if event_type == "conversation.reasoning.delta" else "content", delta)
             account_service.mark_text_used(token)
             return
         except Exception as exc:
@@ -769,8 +871,31 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                 active_backend.close()
 
 
+def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[str]:
+    for kind, delta in stream_text_parts(backend, request):
+        if kind == "content":
+            yield delta
+
+
+@dataclass(frozen=True)
+class TextCompletionOutput:
+    content: str = ""
+    reasoning_content: str = ""
+
+
+def collect_text_output(backend: OpenAIBackendAPI, request: ConversationRequest) -> TextCompletionOutput:
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    for kind, delta in stream_text_parts(backend, request):
+        (reasoning_parts if kind == "reasoning" else content_parts).append(delta)
+    return TextCompletionOutput(
+        content="".join(content_parts),
+        reasoning_content="".join(reasoning_parts),
+    )
+
+
 def collect_text(backend: OpenAIBackendAPI, request: ConversationRequest) -> str:
-    return "".join(stream_text_deltas(backend, request))
+    return collect_text_output(backend, request).content
 
 
 def _get_detailed_error_from_tasks(

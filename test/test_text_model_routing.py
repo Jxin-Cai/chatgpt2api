@@ -14,6 +14,7 @@ from services.protocol import (
     openai_v1_chat_complete,
     openai_v1_response,
 )
+from services.protocol.conversation import TextCompletionOutput
 from services.storage.json_storage import JSONStorageBackend
 
 
@@ -104,7 +105,11 @@ class TextProtocolRoutingTests(unittest.TestCase):
         }
         with (
             mock.patch.object(openai_v1_chat_complete, "text_backend", return_value=object()) as backend,
-            mock.patch.object(openai_v1_chat_complete, "collect_text", return_value="ok"),
+            mock.patch.object(
+                openai_v1_chat_complete,
+                "collect_text_output",
+                return_value=TextCompletionOutput(content="ok"),
+            ),
         ):
             openai_v1_chat_complete.handle(body)
 

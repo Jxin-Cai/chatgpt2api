@@ -8,7 +8,7 @@ import base64
 from services.config import config
 from services.protocol import openai_v1_chat_complete, openai_v1_response
 from services.protocol.chat_completion_cache import cache_key, chat_completion_cache
-from services.protocol.conversation import iter_conversation_payloads, sanitize_output_text
+from services.protocol.conversation import TextCompletionOutput, iter_conversation_payloads, sanitize_output_text
 from utils.helper import extract_image_from_message_content
 
 
@@ -46,7 +46,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
         def fake_collect_text(_backend, _request):
             nonlocal calls
             calls += 1
-            return f"cached answer {calls}"
+            return TextCompletionOutput(content=f"cached answer {calls}")
 
         body = {
             "model": "auto",
@@ -55,7 +55,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         with (
             mock.patch("services.protocol.openai_v1_chat_complete.text_backend", return_value=object()),
-            mock.patch("services.protocol.openai_v1_chat_complete.collect_text", side_effect=fake_collect_text),
+            mock.patch("services.protocol.openai_v1_chat_complete.collect_text_output", side_effect=fake_collect_text),
         ):
             first = openai_v1_chat_complete.handle(body)
             second = openai_v1_chat_complete.handle(body)
@@ -83,7 +83,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         def fake_collect_text(_backend, request):
             captured_efforts.append(request.thinking_effort)
-            return "ok"
+            return TextCompletionOutput(content="ok")
 
         body = {
             "model": "auto",
@@ -93,11 +93,20 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         with (
             mock.patch("services.protocol.openai_v1_chat_complete.text_backend", return_value=object()),
-            mock.patch("services.protocol.openai_v1_chat_complete.collect_text", side_effect=fake_collect_text),
+            mock.patch("services.protocol.openai_v1_chat_complete.collect_text_output", side_effect=fake_collect_text),
         ):
             openai_v1_chat_complete.handle(body)
 
         self.assertEqual(captured_efforts, ["extended"])
+
+    def test_null_thinking_effort_does_not_mask_reasoning_effort(self) -> None:
+        self.assertEqual(
+            openai_v1_chat_complete.thinking_effort_from_body({
+                "thinking_effort": None,
+                "reasoning_effort": "high",
+            }),
+            "high",
+        )
 
     def test_responses_reasoning_effort_reaches_conversation_request(self) -> None:
         captured_efforts: list[str] = []
@@ -123,11 +132,11 @@ class ChatCompletionCacheTests(unittest.TestCase):
     def test_repeated_stream_text_completion_replays_cached_chunks(self) -> None:
         calls = 0
 
-        def fake_stream_text_deltas(_backend, _request):
+        def fake_stream_text_parts(_backend, _request):
             nonlocal calls
             calls += 1
-            yield "streamed"
-            yield " answer"
+            yield "content", "streamed"
+            yield "content", " answer"
 
         body = {
             "model": "auto",
@@ -138,8 +147,8 @@ class ChatCompletionCacheTests(unittest.TestCase):
         with (
             mock.patch("services.protocol.openai_v1_chat_complete.text_backend", return_value=object()),
             mock.patch(
-                "services.protocol.openai_v1_chat_complete.stream_text_deltas",
-                side_effect=fake_stream_text_deltas,
+                "services.protocol.openai_v1_chat_complete.stream_text_parts",
+                side_effect=fake_stream_text_parts,
             ),
         ):
             first = list(openai_v1_chat_complete.handle(body))
@@ -155,7 +164,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         def fake_collect_text(_backend, request):
             captured_messages.extend(request.messages or [])
-            return "ok"
+            return TextCompletionOutput(content="ok")
 
         body = {
             "model": "auto",
@@ -169,7 +178,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         with (
             mock.patch("services.protocol.openai_v1_chat_complete.text_backend", return_value=object()),
-            mock.patch("services.protocol.openai_v1_chat_complete.collect_text", side_effect=fake_collect_text),
+            mock.patch("services.protocol.openai_v1_chat_complete.collect_text_output", side_effect=fake_collect_text),
         ):
             openai_v1_chat_complete.handle(body)
 
@@ -185,7 +194,10 @@ class ChatCompletionCacheTests(unittest.TestCase):
     def test_chat_completion_usage_includes_cached_tokens(self) -> None:
         with (
             mock.patch("services.protocol.openai_v1_chat_complete.text_backend", return_value=object()),
-            mock.patch("services.protocol.openai_v1_chat_complete.collect_text", return_value="ok"),
+            mock.patch(
+                "services.protocol.openai_v1_chat_complete.collect_text_output",
+                return_value=TextCompletionOutput(content="ok"),
+            ),
         ):
             response = openai_v1_chat_complete.handle({
                 "model": "auto",
@@ -477,6 +489,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
     def test_chat_completions_web_search_tool_returns_search_answer(self) -> None:
         search_result = {
             "answer": "Chat search answer.",
+            "reasoning_content": "检索了来源",
             "sources": [{"title": "Example", "url": "https://example.com/chat", "snippet": ""}],
         }
         body = {
@@ -491,6 +504,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
         search.assert_called_once_with("search chat")
         message = response["choices"][0]["message"]
         self.assertIn("Chat search answer.", message["content"])
+        self.assertEqual(message["reasoning_content"], "检索了来源")
         self.assertEqual(message["annotations"][0]["type"], "url_citation")
         self.assertEqual(message["annotations"][0]["url_citation"]["url"], "https://example.com/chat")
 
@@ -508,7 +522,10 @@ class ChatCompletionCacheTests(unittest.TestCase):
         with mock.patch("services.protocol.openai_v1_chat_complete.run_web_search", return_value=search_result) as search:
             response = openai_v1_chat_complete.handle(body)
 
-        search.assert_called_once_with("search options")
+        search.assert_called_once_with(
+            "Search preferences:\n- search context size: low\n\n"
+            "Current user request:\nsearch options"
+        )
         self.assertIn("Options search answer.", response["choices"][0]["message"]["content"])
 
     def test_chat_completions_search_model_triggers_search(self) -> None:
@@ -537,7 +554,10 @@ class ChatCompletionCacheTests(unittest.TestCase):
         with (
             mock.patch("services.protocol.openai_v1_chat_complete.run_web_search") as search,
             mock.patch("services.protocol.openai_v1_chat_complete.text_backend", return_value=object()),
-            mock.patch("services.protocol.openai_v1_chat_complete.collect_text", return_value="plain text answer"),
+            mock.patch(
+                "services.protocol.openai_v1_chat_complete.collect_text_output",
+                return_value=TextCompletionOutput(content="plain text answer"),
+            ),
         ):
             response = openai_v1_chat_complete.handle(body)
 

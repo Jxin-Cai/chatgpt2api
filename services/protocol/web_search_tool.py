@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from services.account_service import account_service
-from services.openai_backend_api import OpenAIBackendAPI
+from services.openai_backend_api import OpenAIBackendAPI, SEARCH_MODEL
 
 WEB_SEARCH_TOOL_TYPES = {"web_search", "web_search_preview", "web_search_preview_2025_03_11"}
 SEARCH_CHAT_MODEL_PREFIXES = (
@@ -19,10 +19,12 @@ def _tool_type(tool: object) -> str:
 
 
 def has_web_search_tool(body: dict[str, Any]) -> bool:
+    tool_choice = body.get("tool_choice")
+    if tool_choice == "none" or _tool_type(tool_choice) == "function":
+        return False
     tools = body.get("tools")
     if isinstance(tools, list):
         return any(_tool_type(tool) in WEB_SEARCH_TOOL_TYPES for tool in tools)
-    tool_choice = body.get("tool_choice")
     return _tool_type(tool_choice) in WEB_SEARCH_TOOL_TYPES
 
 
@@ -71,6 +73,74 @@ def search_query_from_messages(messages: list[dict[str, Any]]) -> str:
         if text:
             return text
     return ""
+
+
+def web_search_options(body: dict[str, Any]) -> dict[str, Any]:
+    value = body.get("web_search_options")
+    options = dict(value) if isinstance(value, dict) else {}
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if not isinstance(tool, dict) or _tool_type(tool) not in WEB_SEARCH_TOOL_TYPES:
+                continue
+            for key in ("search_context_size", "user_location"):
+                if key in tool and key not in options:
+                    options[key] = tool[key]
+            break
+    return options
+
+
+def search_prompt_from_messages(
+    messages: list[dict[str, Any]],
+    options: dict[str, Any] | None = None,
+) -> str:
+    """Build one Web Search prompt without dropping conversation context."""
+    latest_query = search_query_from_messages(messages)
+    if not latest_query:
+        return ""
+    context_rows: list[str] = []
+    latest_user_index = max(
+        (
+            index
+            for index, message in enumerate(messages)
+            if str(message.get("role") or "").strip().lower() == "user"
+            and message_text(message.get("content"))
+        ),
+        default=-1,
+    )
+    for index, message in enumerate(messages):
+        if index == latest_user_index:
+            continue
+        role = str(message.get("role") or "user").strip().upper()
+        text = message_text(message.get("content"))
+        if text:
+            context_rows.append(f"[{role}] {text}")
+
+    preferences: list[str] = []
+    options = options or {}
+    context_size = str(options.get("search_context_size") or "").strip().lower()
+    if context_size in {"low", "medium", "high"}:
+        preferences.append(f"search context size: {context_size}")
+    location = options.get("user_location")
+    if isinstance(location, dict):
+        approximate = location.get("approximate") if isinstance(location.get("approximate"), dict) else location
+        location_parts = [
+            str(approximate.get(key) or "").strip()
+            for key in ("city", "region", "country", "timezone")
+            if str(approximate.get(key) or "").strip()
+        ]
+        if location_parts:
+            preferences.append(f"user location: {', '.join(location_parts)}")
+
+    if not context_rows and not preferences:
+        return latest_query
+    sections = []
+    if context_rows:
+        sections.append("Conversation context:\n" + "\n".join(context_rows))
+    if preferences:
+        sections.append("Search preferences:\n- " + "\n- ".join(preferences))
+    sections.append("Current user request:\n" + latest_query)
+    return "\n\n".join(sections)
 
 
 def _readable_annotation_part(parts: list[str]) -> str:
@@ -154,7 +224,11 @@ def text_with_url_citations(result: dict[str, Any]) -> tuple[str, list[dict[str,
 
 
 def run_web_search(query: str) -> dict[str, Any]:
-    token = account_service.get_text_access_token()
-    result = OpenAIBackendAPI(token).search(query)
+    token = account_service.get_text_access_token(model=SEARCH_MODEL)
+    backend = OpenAIBackendAPI(token)
+    try:
+        result = backend.search(query)
+    finally:
+        backend.close()
     account_service.mark_text_used(token)
     return result

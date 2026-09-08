@@ -73,7 +73,7 @@ CODEX_RESPONSES_MODEL = "gpt-5.5"
 SEARCH_MODEL = "gpt-5-5"
 SEARCH_TIMEOUT_SECS = 300.0
 SEARCH_POLL_INTERVAL_SECS = 3.0
-SEARCH_DONE_STATUS = {"finished_successfully", "finished_partial_completion"}
+SEARCH_DONE_STATUS = {"stop", "finished_successfully", "finished_partial_completion"}
 SEARCH_CONVERSATION_ID_RE = re.compile(r'"conversation_id"\s*:\s*"([^"]+)"')
 SEARCH_URL_RE = re.compile(r"https?://[^\s\"'<>）)\]}]+")
 EDITABLE_FILE_MODEL = "gpt-5-5-thinking"
@@ -519,9 +519,12 @@ class OpenAIBackendAPI:
         normalized = str(value or "").strip().lower()
         if normalized in {"", "none", "auto"}:
             return ""
-        if normalized in {"low", "medium", "high", "standard", "max"}:
-            return normalized
-        if normalized in {"xhigh", "extended"}:
+        if normalized in {"minimal", "low", "medium", "standard"}:
+            return "standard"
+        if normalized in {"high", "xhigh", "extended", "max"}:
+            # The authenticated Web model catalog currently advertises only
+            # standard and extended, even though the public API uses a finer
+            # reasoning_effort scale.
             return "extended"
         return ""
 
@@ -553,6 +556,9 @@ class OpenAIBackendAPI:
             "timezone_offset_min": -480,
             "variant_purpose": "comparison_implicit",
             "websocket_request_id": new_uuid(),
+            # Ask ChatGPT Web to include its user-visible reasoning recap. Raw
+            # reasoning tokens are not returned by Web and are never exposed.
+            "paragen_cot_summary_display_override": "allow",
             "client_contextual_info": {
                 "is_dark_mode": False,
                 "time_since_loaded": 120,
@@ -1952,15 +1958,28 @@ class OpenAIBackendAPI:
         return response.json()
 
     def _extract_search_result(self, conversation_id: str, conversation: Dict[str, Any]) -> Dict[str, Any]:
-        messages = []
-        for node in (conversation.get("mapping") or {}).values():
-            message = (node or {}).get("message") or {}
-            if ((message.get("author") or {}).get("role") or "") == "assistant":
-                messages.append(message)
-        message = max(messages, key=lambda item: float(item.get("create_time") or 0.0)) if messages else {}
+        # Search turns contain internal assistant messages addressed to `web` and
+        # `web.run`, plus reasoning summaries.  Only the user-visible final
+        # assistant message contains the answer and citation metadata.
+        message = self._latest_visible_assistant_message(conversation) or {}
         metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
         finish_details = metadata.get("finish_details") if isinstance(metadata.get("finish_details"), dict) else {}
         answer = self._search_message_text(message)
+        reasoning_messages = [
+            item
+            for item in self._current_turn_visible_assistant_messages(
+                conversation,
+                include_reasoning_recap=True,
+            )
+            if str(((item.get("content") or {}).get("content_type") or "")).strip().lower()
+            == "reasoning_recap"
+        ]
+        reasoning_message = max(
+            reasoning_messages,
+            key=lambda item: float(item.get("create_time") or 0.0),
+            default={},
+        )
+        reasoning_content = self._search_message_text_static(reasoning_message)
         sources = self._extract_search_sources(message)
         for url in SEARCH_URL_RE.findall(answer):
             url = self._clean_search_url(url)
@@ -1970,6 +1989,7 @@ class OpenAIBackendAPI:
             "conversation_id": conversation_id,
             "status": str(finish_details.get("type") or metadata.get("status") or self._find_search_value(message, "status") or "").strip(),
             "answer": answer,
+            "reasoning_content": reasoning_content,
             "sources": sources,
             "assistant_message_id": str(message.get("id") or ""),
             "create_time": float(message.get("create_time") or 0.0),
@@ -1990,19 +2010,7 @@ class OpenAIBackendAPI:
         return sources
 
     def _search_message_text(self, message: Any) -> str:
-        content = message.get("content") if isinstance(message, dict) else {}
-        parts = []
-        if isinstance(content, dict):
-            if isinstance(content.get("text"), str):
-                parts.append(content["text"])
-            for part in content.get("parts") or []:
-                if isinstance(part, str):
-                    parts.append(part)
-                elif isinstance(part, dict):
-                    parts.extend(str(part.get(key) or "") for key in ("text", "summary", "content") if part.get(key))
-        elif isinstance(content, str):
-            parts.append(content)
-        return "\n".join(part.strip() for part in parts if str(part).strip()).strip()
+        return self._search_message_text_static(message)
 
     def _find_search_value(self, payload: Any, key: str) -> str:
         if isinstance(payload, str):
@@ -2630,26 +2638,120 @@ class OpenAIBackendAPI:
             yield "[DONE]"
 
     @staticmethod
+    def _is_visible_assistant_message(
+        message: Dict[str, Any],
+        *,
+        include_reasoning_recap: bool = False,
+    ) -> bool:
+        author = message.get("author") if isinstance(message.get("author"), dict) else {}
+        if str(author.get("role") or "").strip().lower() != "assistant":
+            return False
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        if metadata.get("is_visually_hidden_from_conversation") is True:
+            return False
+        recipient = str(message.get("recipient") or "").strip().lower()
+        if recipient and recipient != "all":
+            return False
+        channel = str(message.get("channel") or "").strip().lower()
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        content_type = str(content.get("content_type") or "").strip().lower()
+        if content_type == "reasoning_recap":
+            return include_reasoning_recap
+        return content_type != "thoughts" and (not channel or channel == "final")
+
+    @staticmethod
+    def _visible_assistant_messages(
+        conversation: Dict[str, Any],
+        *,
+        include_reasoning_recap: bool = False,
+    ) -> list[Dict[str, Any]]:
+        return [
+            message
+            for node in (conversation.get("mapping") or {}).values()
+            if isinstance(node, dict)
+            for message in [node.get("message")]
+            if isinstance(message, dict)
+            and OpenAIBackendAPI._is_visible_assistant_message(
+                message,
+                include_reasoning_recap=include_reasoning_recap,
+            )
+        ]
+
+    @staticmethod
+    def _current_turn_visible_assistant_messages(
+        conversation: Dict[str, Any],
+        *,
+        include_reasoning_recap: bool = False,
+    ) -> list[Dict[str, Any]]:
+        """Return assistant output after the latest user node on the active branch."""
+        mapping = conversation.get("mapping")
+        current_node = str(conversation.get("current_node") or "").strip()
+        if not isinstance(mapping, dict) or not current_node or current_node not in mapping:
+            return OpenAIBackendAPI._visible_assistant_messages(
+                conversation,
+                include_reasoning_recap=include_reasoning_recap,
+            )
+
+        messages: list[Dict[str, Any]] = []
+        visited: set[str] = set()
+        node_id = current_node
+        while node_id and node_id not in visited:
+            visited.add(node_id)
+            node = mapping.get(node_id)
+            if not isinstance(node, dict):
+                break
+            message = node.get("message")
+            if isinstance(message, dict):
+                author = message.get("author") if isinstance(message.get("author"), dict) else {}
+                role = str(author.get("role") or "").strip().lower()
+                if role == "user":
+                    break
+                if OpenAIBackendAPI._is_visible_assistant_message(
+                    message,
+                    include_reasoning_recap=include_reasoning_recap,
+                ):
+                    messages.append(message)
+            node_id = str(node.get("parent") or "").strip()
+        messages.reverse()
+        return messages
+
+    @staticmethod
     def _latest_visible_assistant_message(conversation: Dict[str, Any]) -> Dict[str, Any] | None:
-        messages = []
-        for node in (conversation.get("mapping") or {}).values():
-            message = (node or {}).get("message") or {}
-            author = message.get("author") if isinstance(message.get("author"), dict) else {}
-            if str(author.get("role") or "").strip().lower() != "assistant":
-                continue
-            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-            if metadata.get("is_visually_hidden_from_conversation") is True:
-                continue
-            recipient = str(message.get("recipient") or "").strip().lower()
-            if recipient and recipient != "all":
-                continue
-            channel = str(message.get("channel") or "").strip().lower()
-            if channel and channel != "final":
-                continue
-            messages.append(message)
+        messages = OpenAIBackendAPI._current_turn_visible_assistant_messages(conversation)
         if not messages:
             return None
-        return max(messages, key=lambda item: float(item.get("create_time") or 0.0))
+        def score(item: Dict[str, Any]) -> tuple[int, int, int, int, float]:
+            channel = str(item.get("channel") or "").strip().lower()
+            content = item.get("content") if isinstance(item.get("content"), dict) else {}
+            content_type = str(content.get("content_type") or "").strip().lower()
+            has_text = bool(OpenAIBackendAPI._search_message_text_static(item))
+            return (
+                1 if channel == "final" and has_text else 0,
+                1 if has_text else 0,
+                1 if channel == "final" else 0,
+                1 if content_type in {"text", "code"} else 0,
+                float(item.get("create_time") or 0.0),
+            )
+
+        return max(messages, key=score)
+
+    @staticmethod
+    def _search_message_text_static(message: Any) -> str:
+        content = message.get("content") if isinstance(message, dict) else {}
+        parts = []
+        if isinstance(content, dict):
+            if isinstance(content.get("content"), str):
+                parts.append(content["content"])
+            if isinstance(content.get("text"), str):
+                parts.append(content["text"])
+            for part in content.get("parts") or []:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    parts.extend(str(part.get(key) or "") for key in ("text", "summary", "content") if part.get(key))
+        elif isinstance(content, str):
+            parts.append(content)
+        return "\n".join(part.strip() for part in parts if str(part).strip()).strip()
 
     def _poll_handoff_conversation(
         self,
@@ -2659,7 +2761,7 @@ class OpenAIBackendAPI:
     ) -> Iterator[str]:
         """Convert a Work Mode stream handoff into ordinary conversation events."""
         deadline = time.time() + timeout_secs
-        last_fingerprint = ""
+        last_fingerprints: dict[str, str] = {}
         while time.time() < deadline:
             try:
                 conversation = self._get_conversation(conversation_id)
@@ -2668,28 +2770,46 @@ class OpenAIBackendAPI:
                     time.sleep(poll_interval_secs)
                     continue
                 raise
-            message = self._latest_visible_assistant_message(conversation)
-            if message is not None:
-                status = str(message.get("status") or "").strip().lower()
-                fingerprint = json.dumps(
+            messages = self._current_turn_visible_assistant_messages(
+                conversation,
+                include_reasoning_recap=True,
+            )
+            messages.sort(key=lambda item: float(item.get("create_time") or 0.0))
+            for index, message in enumerate(messages):
+                content = message.get("content") if isinstance(message.get("content"), dict) else {}
+                message_key = str(message.get("id") or "").strip() or json.dumps(
                     {
-                        "status": status,
-                        "end_turn": message.get("end_turn"),
-                        "content": message.get("content"),
+                        "index": index,
+                        "create_time": message.get("create_time"),
+                        "content_type": content.get("content_type"),
+                        "channel": message.get("channel"),
                     },
                     ensure_ascii=False,
                     sort_keys=True,
                     default=str,
                 )
-                if fingerprint != last_fingerprint:
-                    last_fingerprint = fingerprint
+                fingerprint = json.dumps(
+                    {
+                        "status": message.get("status"),
+                        "end_turn": message.get("end_turn"),
+                        "content": content,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                if fingerprint != last_fingerprints.get(message_key):
+                    last_fingerprints[message_key] = fingerprint
                     yield json.dumps(
                         {"message": message, "conversation_id": conversation_id},
                         ensure_ascii=False,
                         separators=(",", ":"),
                         default=str,
                     )
-                if message.get("end_turn") is True or status in WORK_MODE_DONE_STATUSES:
+            final_message = self._latest_visible_assistant_message(conversation)
+            if final_message is not None:
+                status = str(final_message.get("status") or "").strip().lower()
+                if final_message.get("end_turn") is True or status in WORK_MODE_DONE_STATUSES:
                     return
             time.sleep(poll_interval_secs)
         raise RuntimeError(f"timed out waiting for Work Mode result: {conversation_id}")

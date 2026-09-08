@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- [增强] 补齐 `/v1/chat/completions` 函数工具桥接：支持 `tools`、`tool_choice`、`parallel_tool_calls`、标准 `tool_calls` 流式/非流式输出和 `role=tool` 结果续轮；修复 ChatGPT Web 搜索误选内部消息导致空答案，并保留多轮上下文、搜索选项和 URL citations。
+- [增强] 还原 ChatGPT Web 面向用户展示的推理摘要：修正 OpenAI `reasoning_effort` 到 Web `standard` / `extended` 的映射，并通过 `message.reasoning_content` / `delta.reasoning_content` 输出 `reasoning_recap`，覆盖普通文本、函数调用、Web Search 和 Work Mode handoff。
 + [修复] 根据活动账号的 ChatGPT Web 实时模型目录桥接 Codex 客户端模型名，例如优先将 `gpt-5.6-sol` 映射到 Web 的 `gpt-5.6-sol-wm`，并续接 Work Mode 的 `stream_handoff` 结果；排除仅可枚举但无法对话的匿名模型，让 `/v1/models` 只暴露可路由模型和别名。
 
 ## 1.8.0 - 2026-07-28
