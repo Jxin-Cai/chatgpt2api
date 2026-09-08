@@ -14,7 +14,7 @@ import { SearchPanel } from "./components/search-panel";
 import { SkillPanel } from "./components/skill-panel";
 
 const tabs = [
-  { value: "realtime", title: "实时语音", group: "conversation", description: "WebRTC voice core", icon: Mic },
+  { value: "realtime", title: "实时语音", group: "conversation", description: "Adaptive voice relay", icon: Mic },
   { value: "chat", title: "对话", group: "conversation", description: "流式 ARC 对话", icon: MessageSquareText },
   { value: "skills", title: "搜索Skills", group: "utilities", description: "发现可用技能", icon: Sparkles },
   { value: "search", title: "搜索", group: "utilities", description: "检索连接器", icon: Search },

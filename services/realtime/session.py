@@ -363,7 +363,7 @@ class RealtimeSession:
         elif event_type == "response.cancel":
             self._send_to_dc({"type": "response.cancel"})
 
-        elif event_type in ("conversation.item.create", "response.create",
+        elif event_type in ("relay_message", "conversation.item.create", "response.create",
                             "conversation.item.delete", "conversation.item.truncate"):
             self._send_to_dc(event)
         else:

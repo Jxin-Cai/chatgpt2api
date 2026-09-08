@@ -7,12 +7,15 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import webConfig from "@/constants/common-env";
 import {
+  type RealtimeConnection,
+  type RealtimeConnectionHandlers,
   RealtimeEvent,
   RealtimeSignalingError,
   RealtimeWebRTCConnection,
   realtimeEndpoint,
   type RealtimeConnectionQuality,
 } from "@/lib/realtime-webrtc";
+import { RealtimeWebSocketConnection } from "@/lib/realtime-websocket";
 import {
   chatTranscriptUpdateFromEvent,
   transcriptUpdateFromEvent,
@@ -138,7 +141,7 @@ export function RealtimePanel() {
   const [textApplying, setTextApplying] = useState(false);
   const [quality, setQuality] = useState<RealtimeConnectionQuality | null>(null);
 
-  const realtimeRef = useRef<RealtimeWebRTCConnection | null>(null);
+  const realtimeRef = useRef<RealtimeConnection | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const remoteAnalyserRef = useRef<AnalyserNode | null>(null);
@@ -613,7 +616,7 @@ export function RealtimePanel() {
       resumeHandleRef.current = "";
     }
 
-    const connection = new RealtimeWebRTCConnection({
+    const handlers: RealtimeConnectionHandlers = {
       onEvent: handleRealtimeEvent,
       onRemoteStream: attachRemoteMeter,
       onConnectionState: (state) => {
@@ -639,12 +642,13 @@ export function RealtimePanel() {
         addLog("info", `麦克风: ${state} · ${settings.sampleRate || "?"}Hz · ${settings.channelCount || "?"}ch`);
         if (state === "muted") setStatusDetail("麦克风没有提供音频，请检查系统输入设备和权限");
       },
-    });
+    };
+    let connection: RealtimeConnection = new RealtimeWebSocketConnection(handlers);
     realtimeRef.current = connection;
 
     try {
-      addLog("info", retry ? "正在切换账号并重连…" : "正在建立端到端 WebRTC…");
-      const result = await connection.connect({
+      addLog("info", retry ? "正在切换账号并重连…" : "正在建立平滑语音中继…");
+      const options = {
         authorization: `Bearer ${session.key}`,
         voice,
         baseUrl: webConfig.apiUrl || "",
@@ -652,7 +656,21 @@ export function RealtimePanel() {
         conversationId: preserveSession ? conversationIdRef.current : undefined,
         parentMessageId: preserveSession ? parentMessageIdRef.current : undefined,
         resumeHandle: preserveSession ? resumeHandleRef.current : undefined,
-      });
+      };
+      let result;
+      try {
+        result = await connection.connect(options);
+      } catch (relayError) {
+        if (realtimeRef.current !== connection) return;
+        connection.close();
+        addLog(
+          "info",
+          `平滑中继不可用，回退 WebRTC：${relayError instanceof Error ? relayError.message : String(relayError)}`,
+        );
+        connection = new RealtimeWebRTCConnection(handlers);
+        realtimeRef.current = connection;
+        result = await connection.connect(options);
+      }
       if (realtimeRef.current !== connection) return;
       setConnected(true);
       reconnectCountRef.current = 0;
@@ -721,11 +739,13 @@ export function RealtimePanel() {
   };
 
   const phaseCopy = PHASE_COPY[phase];
-  const qualityLabel = !quality || (quality.roundTripTimeMs === undefined && quality.jitterMs === undefined)
+  const qualityLabel = quality?.candidateType === "relay"
+    ? "平滑中继"
+    : !quality || (quality.roundTripTimeMs === undefined && quality.jitterMs === undefined)
     ? "检测中"
-    : (quality.roundTripTimeMs || 0) > 350 || (quality.jitterMs || 0) > 80
+    : (quality.packetLossPercent || 0) > 5 || (quality.concealedSamplePercent || 0) > 3 || (quality.jitterMs || 0) > 80
       ? "网络较差"
-      : (quality.roundTripTimeMs || 0) > 180 || (quality.jitterMs || 0) > 40
+      : (quality.packetLossPercent || 0) > 2 || (quality.concealedSamplePercent || 0) > 1 || (quality.jitterMs || 0) > 40
         ? "网络一般"
         : "网络良好";
 
@@ -749,7 +769,11 @@ export function RealtimePanel() {
           {connected && (
             <span
               className="hidden items-center gap-1.5 rounded-full border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] text-white/42 sm:flex"
-              title={quality ? `RTT ${quality.roundTripTimeMs ?? "-"}ms · 抖动 ${quality.jitterMs ?? "-"}ms · ${quality.candidateType ?? "unknown"}` : "正在采集 WebRTC 质量"}
+              title={quality?.candidateType === "relay"
+                ? "WebSocket 平滑中继 · 约 220ms 播放缓冲"
+                : quality
+                  ? `RTT ${quality.roundTripTimeMs ?? "-"}ms · 抖动 ${quality.jitterMs ?? "-"}ms · 丢包 ${(quality.packetLossPercent ?? 0).toFixed(1)}% · 补偿 ${(quality.concealedSamplePercent ?? 0).toFixed(1)}% · 缓冲 ${quality.jitterBufferMs ?? "-"}ms · ${quality.candidateType ?? "unknown"}`
+                  : "正在采集 WebRTC 质量"}
             >
               <Wifi className="size-3 text-cyan-300/75" />
               {qualityLabel}

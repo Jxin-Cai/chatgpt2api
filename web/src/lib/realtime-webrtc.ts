@@ -20,6 +20,9 @@ export type RealtimeConnectionQuality = {
   packetsLost?: number;
   packetsReceived?: number;
   concealedSamples?: number;
+  packetLossPercent?: number;
+  concealedSamplePercent?: number;
+  jitterBufferMs?: number;
   candidateType?: string;
 };
 
@@ -36,7 +39,7 @@ export class RealtimeSignalingError extends Error {
   }
 }
 
-type RealtimeWebRTCHandlers = {
+export type RealtimeConnectionHandlers = {
   onEvent: (event: RealtimeEvent) => void;
   onConnectionState: (state: RTCPeerConnectionState) => void;
   onRemoteStream?: (stream: MediaStream) => void;
@@ -45,9 +48,39 @@ type RealtimeWebRTCHandlers = {
   onMicrophoneState?: (state: "live" | "muted", settings: MediaTrackSettings) => void;
 };
 
+export type RealtimeConnectionResult = {
+  location: string;
+  attemptId: string;
+  requestId: string;
+  sessionHandle: string;
+  resumeHandle: string;
+};
+
+export interface RealtimeConnection {
+  connect(options: ConnectOptions): Promise<RealtimeConnectionResult>;
+  reportQuotaExhausted(details?: {
+    reason?: string;
+    restoreAt?: string;
+    retryAfterSeconds?: number;
+  }): Promise<void>;
+  sendEvent(event: RealtimeEvent): void;
+  sendTextMessage(text: string): string;
+  setMicrophoneEnabled(enabled: boolean): void;
+  getMicrophoneStream(): MediaStream | null;
+  getRemoteStream(): MediaStream | null;
+  close(): void;
+}
+
 const CONNECTION_TIMEOUT_MS = 15_000;
 const ICE_GATHERING_TIMEOUT_MS = 5_000;
 const DATA_CHANNEL_TIMEOUT_MS = 10_000;
+const INITIAL_JITTER_BUFFER_MS = 280;
+const MAX_JITTER_BUFFER_MS = 600;
+
+type BufferedAudioReceiver = RTCRtpReceiver & {
+  jitterBufferTarget?: number | null;
+  playoutDelayHint?: number | null;
+};
 
 function decodeDataChannelMessage(raw: string): RealtimeEvent {
   const outer = JSON.parse(raw) as RealtimeEvent & { data?: string | RealtimeEvent };
@@ -159,7 +192,7 @@ function waitForDataChannel(channel: RTCDataChannel): Promise<void> {
   });
 }
 
-export class RealtimeWebRTCConnection {
+export class RealtimeWebRTCConnection implements RealtimeConnection {
   private pc: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
   private microphone: MediaStream | null = null;
@@ -168,17 +201,15 @@ export class RealtimeWebRTCConnection {
   private signalingAbort: AbortController | null = null;
   private statsTimer: number | null = null;
   private sessionReport: { authorization: string; baseUrl: string; callId: string } | null = null;
+  private audioReceiver: BufferedAudioReceiver | null = null;
+  private jitterBufferTargetMs = INITIAL_JITTER_BUFFER_MS;
+  private previousAudioStats: { packetsReceived: number; packetsLost: number; concealedSamples: number; totalSamplesReceived: number } | null = null;
+  private healthyQualitySamples = 0;
   private closed = true;
 
-  constructor(private readonly handlers: RealtimeWebRTCHandlers) {}
+  constructor(private readonly handlers: RealtimeConnectionHandlers) {}
 
-  async connect(options: ConnectOptions): Promise<{
-    location: string;
-    attemptId: string;
-    requestId: string;
-    sessionHandle: string;
-    resumeHandle: string;
-  }> {
+  async connect(options: ConnectOptions): Promise<RealtimeConnectionResult> {
     this.close();
     this.closed = false;
 
@@ -196,6 +227,10 @@ export class RealtimeWebRTCConnection {
     pc.ontrack = (event) => {
       const [stream] = event.streams;
       if (stream) {
+        if (event.track.kind === "audio") {
+          this.audioReceiver = event.receiver as BufferedAudioReceiver;
+          this.setJitterBufferTarget(INITIAL_JITTER_BUFFER_MS);
+        }
         this.remoteStream = stream;
         audio.srcObject = stream;
         this.handlers.onRemoteStream?.(stream);
@@ -429,6 +464,10 @@ export class RealtimeWebRTCConnection {
     this.signalingAbort = null;
     if (this.statsTimer !== null) window.clearInterval(this.statsTimer);
     this.statsTimer = null;
+    this.audioReceiver = null;
+    this.previousAudioStats = null;
+    this.healthyQualitySamples = 0;
+    this.jitterBufferTargetMs = INITIAL_JITTER_BUFFER_MS;
     this.sessionReport = null;
     if (this.dataChannel?.readyState === "open") {
       this.setMicrophoneEnabled(false);
@@ -456,6 +495,23 @@ export class RealtimeWebRTCConnection {
     this.dataChannel.send(JSON.stringify({ type: "data_message", data: JSON.stringify(event) }));
   }
 
+  private setJitterBufferTarget(targetMs: number): void {
+    const receiver = this.audioReceiver;
+    if (!receiver) return;
+    const clamped = Math.max(INITIAL_JITTER_BUFFER_MS, Math.min(MAX_JITTER_BUFFER_MS, Math.round(targetMs)));
+    const targetable = receiver as unknown as Record<string, number | null | undefined>;
+    try {
+      if ("jitterBufferTarget" in targetable) {
+        targetable.jitterBufferTarget = clamped;
+      } else if ("playoutDelayHint" in targetable) {
+        targetable.playoutDelayHint = clamped / 1000;
+      }
+      this.jitterBufferTargetMs = clamped;
+    } catch {
+      // Older browsers expose one of these experimental properties as read-only.
+    }
+  }
+
   private startQualitySampling(pc: RTCPeerConnection): void {
     if (!this.handlers.onQuality || this.statsTimer !== null) return;
     const sample = async () => {
@@ -469,6 +525,37 @@ export class RealtimeWebRTCConnection {
             quality.packetsLost = typeof stat.packetsLost === "number" ? stat.packetsLost : undefined;
             quality.packetsReceived = typeof stat.packetsReceived === "number" ? stat.packetsReceived : undefined;
             quality.concealedSamples = typeof stat.concealedSamples === "number" ? stat.concealedSamples : undefined;
+            if (typeof stat.jitterBufferDelay === "number" && typeof stat.jitterBufferEmittedCount === "number" && stat.jitterBufferEmittedCount > 0) {
+              quality.jitterBufferMs = Math.round(stat.jitterBufferDelay / stat.jitterBufferEmittedCount * 1000);
+            }
+            const current = {
+              packetsReceived: Number(stat.packetsReceived || 0),
+              packetsLost: Number(stat.packetsLost || 0),
+              concealedSamples: Number(stat.concealedSamples || 0),
+              totalSamplesReceived: Number(stat.totalSamplesReceived || 0),
+            };
+            const previous = this.previousAudioStats;
+            if (previous) {
+              const receivedDelta = Math.max(0, current.packetsReceived - previous.packetsReceived);
+              const lostDelta = Math.max(0, current.packetsLost - previous.packetsLost);
+              const packetTotal = receivedDelta + lostDelta;
+              const sampleDelta = Math.max(0, current.totalSamplesReceived - previous.totalSamplesReceived);
+              const concealedDelta = Math.max(0, current.concealedSamples - previous.concealedSamples);
+              quality.packetLossPercent = packetTotal > 0 ? lostDelta / packetTotal * 100 : 0;
+              quality.concealedSamplePercent = sampleDelta > 0 ? concealedDelta / sampleDelta * 100 : 0;
+
+              if (quality.packetLossPercent > 2 || quality.concealedSamplePercent > 1) {
+                this.healthyQualitySamples = 0;
+                this.setJitterBufferTarget(this.jitterBufferTargetMs + 80);
+              } else {
+                this.healthyQualitySamples += 1;
+                if (this.healthyQualitySamples >= 15 && this.jitterBufferTargetMs > INITIAL_JITTER_BUFFER_MS) {
+                  this.setJitterBufferTarget(this.jitterBufferTargetMs - 40);
+                  this.healthyQualitySamples = 0;
+                }
+              }
+            }
+            this.previousAudioStats = current;
           } else if (stat.type === "candidate-pair" && stat.state === "succeeded" && stat.nominated) {
             quality.roundTripTimeMs = typeof stat.currentRoundTripTime === "number"
               ? Math.round(stat.currentRoundTripTime * 1000)
@@ -483,6 +570,6 @@ export class RealtimeWebRTCConnection {
       }
     };
     void sample();
-    this.statsTimer = window.setInterval(() => void sample(), 5_000);
+    this.statsTimer = window.setInterval(() => void sample(), 1_000);
   }
 }

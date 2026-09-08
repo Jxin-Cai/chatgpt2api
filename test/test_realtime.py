@@ -173,6 +173,38 @@ def test_data_channel_queue_preserves_terminal_message_over_telemetry():
     assert terminal in session._dc_messages._queue
 
 
+def test_realtime_session_forwards_relay_message_to_upstream_data_channel():
+    class StubDataChannel:
+        readyState = "open"
+
+        def __init__(self):
+            self.messages = []
+
+        def send(self, message):
+            self.messages.append(message)
+
+    async def run():
+        session = RealtimeSession(
+            identity={},
+            model="test",
+            websocket=object(),
+            access_token="token",
+        )
+        session._data_channel = StubDataChannel()
+        event = {
+            "type": "relay_message",
+            "payload": {"type": "relay_message", "message": {"id": "message-1"}},
+        }
+
+        await session._handle_client_event("relay_message", event)
+
+        assert len(session._data_channel.messages) == 1
+        outer = json.loads(session._data_channel.messages[0])
+        assert json.loads(outer["data"]) == event
+
+    asyncio.run(run())
+
+
 def test_resolve_voice_accepts_native_ids_and_official_aliases():
     assert resolve_voice("ember") == "ember"
     assert resolve_voice("MARIN") == "ember"

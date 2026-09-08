@@ -70,6 +70,31 @@ def test_realtime_capabilities_and_voices_require_api_key():
     assert {voice["id"] for voice in voices.json()["data"]} == realtime.REALTIME_VOICE_IDS
 
 
+def test_realtime_websocket_echoes_browser_auth_subprotocol():
+    app = FastAPI()
+
+    class StubSession:
+        def __init__(self, **kwargs):
+            pass
+
+        async def run(self):
+            return None
+
+        async def close(self):
+            return None
+
+    with (
+        mock.patch.object(realtime, "require_identity", return_value={"name": "tester"}),
+        mock.patch.object(realtime.account_service, "get_realtime_access_token", return_value="token"),
+        mock.patch.object(realtime, "RealtimeSession", StubSession),
+    ):
+        app.include_router(realtime.create_router())
+        client = TestClient(app)
+        protocol = "openai-insecure-api-key.client-key"
+        with client.websocket_connect("/v1/realtime", subprotocols=[protocol]) as websocket:
+            assert websocket.accepted_subprotocol == protocol
+
+
 def test_realtime_signaling_rejects_unknown_voice_before_contacting_upstream():
     app = FastAPI()
     app.include_router(realtime.create_router())

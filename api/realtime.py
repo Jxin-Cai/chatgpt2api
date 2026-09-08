@@ -858,6 +858,7 @@ def create_router() -> APIRouter:
         model: str = Query(default=CHATGPT_WEB_REALTIME_MODEL),
         voice: str = Query(default=REALTIME_DEFAULT_VOICE),
     ):
+        accepted_subprotocol: str | None = None
         # 认证：从 header 或 query 中获取 token
         auth = (
             websocket.headers.get("authorization")
@@ -874,6 +875,9 @@ def create_router() -> APIRouter:
                 proto = proto.strip()
                 if proto.startswith("openai-insecure-api-key."):
                     auth = f"Bearer {proto.removeprefix('openai-insecure-api-key.')}"
+                    # Browsers abort the handshake when they offer a protocol and
+                    # the server does not echo the selected value in the response.
+                    accepted_subprotocol = proto
                     break
 
         try:
@@ -892,7 +896,7 @@ def create_router() -> APIRouter:
         try:
             access_token = account_service.get_realtime_access_token()
         except RuntimeError as e:
-            await websocket.accept()
+            await websocket.accept(subprotocol=accepted_subprotocol)
             import json
             await websocket.send_text(json.dumps({
                 "type": "error",
@@ -901,7 +905,7 @@ def create_router() -> APIRouter:
             await websocket.close(code=1011)
             return
 
-        await websocket.accept()
+        await websocket.accept(subprotocol=accepted_subprotocol)
         logger.info(f"[realtime] New session: model={model}, identity={identity.get('name')}")
 
         session = RealtimeSession(
