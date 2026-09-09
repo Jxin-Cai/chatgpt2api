@@ -34,11 +34,16 @@ class ModelListTests(unittest.TestCase):
             result = openai_v1_models.list_models()
 
         ids = {item["id"] for item in result["data"]}
-        self.assertIn("gpt-image-2", ids)
-        self.assertIn("codex-gpt-image-2", ids)
-        self.assertIn("team-codex-gpt-image-2", ids)
-        self.assertNotIn("plus-codex-gpt-image-2", ids)
-        self.assertNotIn("pro-codex-gpt-image-2", ids)
+        self.assertIn("gpt-image-2.5", ids)
+        self.assertIn("gpt-image-2.5-flare", ids)
+        self.assertIn("gpt-image-2.5-sunburst", ids)
+        self.assertIn("codex-gpt-image-2.5", ids)
+        self.assertIn("codex-gpt-image-2.5-flare", ids)
+        self.assertIn("team-codex-gpt-image-2.5", ids)
+        self.assertNotIn("plus-codex-gpt-image-2.5", ids)
+        self.assertNotIn("pro-codex-gpt-image-2.5", ids)
+        self.assertNotIn("gpt-image-2", ids)
+        self.assertNotIn("codex-gpt-image-2", ids)
 
     def test_list_models_does_not_return_codex_models_for_web_plus_accounts(self):
         with (
@@ -58,9 +63,10 @@ class ModelListTests(unittest.TestCase):
             result = openai_v1_models.list_models()
 
         ids = {item["id"] for item in result["data"]}
-        self.assertIn("gpt-image-2", ids)
-        self.assertNotIn("codex-gpt-image-2", ids)
-        self.assertNotIn("plus-codex-gpt-image-2", ids)
+        self.assertIn("gpt-image-2.5", ids)
+        self.assertNotIn("codex-gpt-image-2.5", ids)
+        self.assertNotIn("plus-codex-gpt-image-2.5", ids)
+        self.assertNotIn("gpt-image-2", ids)
 
     def test_list_models_does_not_advertise_image_models_for_inactive_accounts(self):
         with (

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [调整] 模型列表对齐上游当前代际：官网画图改为 `gpt-image-2.5`（含 Flare / Sunburst），Codex 画图改为 `codex-gpt-image-2.5`；推荐文本模型改为 `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-6-astra`，并移除 `gpt-image-2`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-mini` 等旧名称。
 - [修复] 文本对话按客户端调用的 `/v1/models` 名称注入模型身份：`gpt-5.6-luna-wm` 对外自称 `GPT-5.6 Luna` / `gpt-5.6-luna`，不再沿用 ChatGPT Web 默认的 GPT-5.6 Sol。
 - [修复] 文本模型别名改为严格透传：仅桥接语义相同的 Web slug，目标模型不可用时明确报错，不再将 Terra、Luna 或 Sol 的缺失目标静默降级到默认 Sol 模型。
 - [增强] 补齐 `/v1/chat/completions` 函数工具桥接：支持 `tools`、`tool_choice`、`parallel_tool_calls`、标准 `tool_calls` 流式/非流式输出和 `role=tool` 结果续轮；修复 ChatGPT Web 搜索误选内部消息导致空答案，并保留多轮上下文、搜索选项和 URL citations。

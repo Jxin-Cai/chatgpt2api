@@ -511,7 +511,9 @@ class ConfigStore:
 
     @property
     def default_upstream_model_name(self) -> str:
-        return str(self.data.get("default_upstream_model_name") or "gpt-5-5").strip()
+        from utils.helper import DEFAULT_UPSTREAM_MODEL_NAME
+
+        return str(self.data.get("default_upstream_model_name") or DEFAULT_UPSTREAM_MODEL_NAME).strip()
 
     @property
     def default_thinking_effort(self) -> str:

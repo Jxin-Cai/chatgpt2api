@@ -14,15 +14,23 @@ from fastapi import HTTPException
 from services.proxy_service import proxy_settings
 from utils.log import logger
 
-BASE_IMAGE_MODELS = {"gpt-image-2", "codex-gpt-image-2"}
+WEB_IMAGE_MODEL = "gpt-image-2.5"
+CODEX_IMAGE_MODEL = "codex-gpt-image-2.5"
+DEFAULT_IMAGE_MODEL = WEB_IMAGE_MODEL
+DEFAULT_UPSTREAM_MODEL_NAME = "gpt-5.6-sol-wm"
 IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
-CODEX_IMAGE_MODEL = "codex-gpt-image-2"
+IMAGE_VARIANT_SUFFIXES = ("", "-flare", "-sunburst")
+WEB_IMAGE_MODELS = {f"{WEB_IMAGE_MODEL}{suffix}" for suffix in IMAGE_VARIANT_SUFFIXES}
+CODEX_IMAGE_MODELS = {f"{CODEX_IMAGE_MODEL}{suffix}" for suffix in IMAGE_VARIANT_SUFFIXES}
+BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | CODEX_IMAGE_MODELS
 PREFIXED_CODEX_IMAGE_MODELS = {
-    f"{plan_type}-{CODEX_IMAGE_MODEL}"
+    f"{plan_type}-{model}"
     for plan_type in IMAGE_MODEL_PLAN_TYPES
+    for model in CODEX_IMAGE_MODELS
 }
 IMAGE_MODELS = BASE_IMAGE_MODELS | PREFIXED_CODEX_IMAGE_MODELS
-PUBLIC_IMAGE_MODELS = BASE_IMAGE_MODELS | PREFIXED_CODEX_IMAGE_MODELS
+PUBLIC_IMAGE_MODELS = IMAGE_MODELS
+DEFAULT_CODEX_IMAGE_TOOL_MODEL = "gpt-image-2.5-flare"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
 SUPPORTED_JSON_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
@@ -116,7 +124,7 @@ def split_image_model(model: object) -> tuple[str | None, str | None]:
         prefix = f"{plan_type}-"
         if normalized.startswith(prefix):
             base_model = normalized[len(prefix):]
-            if base_model == CODEX_IMAGE_MODEL:
+            if base_model in CODEX_IMAGE_MODELS:
                 return plan_type, base_model
     return None, None
 
@@ -128,7 +136,15 @@ def is_supported_image_model(model: object) -> bool:
 
 def is_codex_image_model(model: object) -> bool:
     _, base_model = split_image_model(model)
-    return base_model == CODEX_IMAGE_MODEL
+    return base_model in CODEX_IMAGE_MODELS
+
+
+def codex_image_tool_model(model: object) -> str:
+    """Map a local Codex image alias to the upstream Images 2.5 tool model."""
+    _, base_model = split_image_model(model)
+    if base_model and base_model.endswith("-sunburst"):
+        return "gpt-image-2.5-sunburst"
+    return DEFAULT_CODEX_IMAGE_TOOL_MODEL
 
 
 def is_image_chat_request(body: dict[str, object]) -> bool:

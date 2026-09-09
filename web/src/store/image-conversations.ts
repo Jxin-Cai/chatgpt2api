@@ -2,7 +2,7 @@
 
 import localforage from "localforage";
 
-import type { ImageModel } from "@/lib/api";
+import { DEFAULT_IMAGE_MODEL, type ImageModel } from "@/lib/api";
 
 export type ImageConversationMode = "generate" | "edit";
 
@@ -145,7 +145,7 @@ function normalizeTurn(turn: ImageTurn & Record<string, unknown>): ImageTurn {
   return {
     id: String(turn.id || `${Date.now()}`),
     prompt: String(turn.prompt || ""),
-    model: (turn.model as ImageModel) || "gpt-image-2",
+    model: (turn.model as ImageModel) || DEFAULT_IMAGE_MODEL,
     mode: turn.mode === "edit" ? "edit" : "generate",
     referenceImages: getLegacyReferenceImages(turn),
     count: Math.max(1, Number(turn.count || normalizedImages.length || 1)),
@@ -175,7 +175,7 @@ function normalizeConversation(conversation: ImageConversation & Record<string, 
         normalizeTurn({
           id: String(conversation.id || `${Date.now()}`),
           prompt: String(conversation.prompt || ""),
-          model: (conversation.model as ImageModel) || "gpt-image-2",
+          model: (conversation.model as ImageModel) || DEFAULT_IMAGE_MODEL,
           mode: conversation.mode === "edit" ? "edit" : "generate",
           referenceImages: getLegacyReferenceImages(conversation),
           count: Number(conversation.count || 1),

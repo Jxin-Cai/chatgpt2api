@@ -25,6 +25,7 @@ import {
   fetchImageTasks,
   resumeImagePoll,
   type Account,
+  DEFAULT_IMAGE_MODEL,
   type ImageModel,
   type Model,
   type ImageTask,
@@ -155,7 +156,7 @@ function normalizeStoredImageModel(value: string | null, availableModels: ImageM
   if (normalized && availableModels.includes(normalized)) {
     return normalized;
   }
-  return availableModels[0] || "gpt-image-2";
+  return availableModels[0] || DEFAULT_IMAGE_MODEL;
 }
 
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
@@ -469,8 +470,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const [imageWidth, setImageWidth] = useState("1024");
   const [imageHeight, setImageHeight] = useState("1024");
   const [imageQuality, setImageQuality] = useState("auto");
-  const [imageModel, setImageModel] = useState<ImageModel>("gpt-image-2");
-  const [imageModels, setImageModels] = useState<ImageModel[]>(["gpt-image-2"]);
+  const [imageModel, setImageModel] = useState<ImageModel>(DEFAULT_IMAGE_MODEL);
+  const [imageModels, setImageModels] = useState<ImageModel[]>([DEFAULT_IMAGE_MODEL]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
@@ -705,7 +706,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         });
       } catch {
         if (!cancelled) {
-          setImageModels(["gpt-image-2"]);
+          setImageModels([DEFAULT_IMAGE_MODEL]);
         }
       }
     };

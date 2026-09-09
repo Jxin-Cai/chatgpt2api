@@ -23,7 +23,16 @@ from PIL import Image
 from services.account_service import account_service
 from services.config import config
 from services.proxy_service import proxy_settings
-from utils.helper import UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid, split_image_model
+from utils.helper import (
+    CODEX_IMAGE_MODELS,
+    WEB_IMAGE_MODELS,
+    UpstreamHTTPError,
+    codex_image_tool_model,
+    ensure_ok,
+    iter_sse_payloads,
+    new_uuid,
+    split_image_model,
+)
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
 from utils.turnstile import solve_turnstile_token
@@ -68,15 +77,14 @@ class ChatRequirements:
 DEFAULT_CLIENT_VERSION = "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887"
 DEFAULT_CLIENT_BUILD_NUMBER = "6708908"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
-CODEX_IMAGE_MODEL = "codex-gpt-image-2"
-CODEX_RESPONSES_MODEL = "gpt-5.5"
-SEARCH_MODEL = "gpt-5-5"
+CODEX_RESPONSES_MODEL = "gpt-5.6-sol"
+SEARCH_MODEL = "gpt-5.6-sol-wm"
 SEARCH_TIMEOUT_SECS = 300.0
 SEARCH_POLL_INTERVAL_SECS = 3.0
 SEARCH_DONE_STATUS = {"stop", "finished_successfully", "finished_partial_completion"}
 SEARCH_CONVERSATION_ID_RE = re.compile(r'"conversation_id"\s*:\s*"([^"]+)"')
 SEARCH_URL_RE = re.compile(r"https?://[^\s\"'<>）)\]}]+")
-EDITABLE_FILE_MODEL = "gpt-5-5-thinking"
+EDITABLE_FILE_MODEL = "gpt-5.6-sol-wm"
 EDITABLE_FILE_THINKING_EFFORT = "extended"
 EDITABLE_FILE_TIMEOUT_SECS = 1200.0
 EDITABLE_FILE_POLL_INTERVAL_SECS = 5.0
@@ -579,9 +587,9 @@ class OpenAIBackendAPI:
         _, base_model = split_image_model(model)
         if not base_model:
             return "auto", ""
-        if base_model == "gpt-image-2":
+        if base_model in WEB_IMAGE_MODELS:
             upstream_model = config.default_upstream_model_name
-        elif base_model == CODEX_IMAGE_MODEL:
+        elif base_model in CODEX_IMAGE_MODELS:
             upstream_model = base_model
         else:
             return "auto", ""
@@ -791,6 +799,7 @@ class OpenAIBackendAPI:
             images: list[str] | None = None,
             size: str | None = None,
             quality: str = "auto",
+            model: str = "",
     ) -> Iterator[Dict[str, Any]]:
         if not self.access_token:
             raise RuntimeError("access_token is required for codex image endpoints")
@@ -803,7 +812,7 @@ class OpenAIBackendAPI:
             "input": self._codex_image_input(prompt, images or []),
             "tools": [{
                 "type": "image_generation",
-                "model": "gpt-image-2",
+                "model": codex_image_tool_model(model),
                 "action": "edit" if images else "generate",
                 "size": str(size or "1024x1024"),
                 "quality": str(quality or "auto"),

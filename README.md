@@ -124,13 +124,13 @@ environment:
 - 支持通过 `n` 返回多张生成结果
 - 支持生成可编辑 PPT 文件
 - 支持生成可编辑 PSD 文件
-- 支持 Codex 中的画图接口逆向，仅 `Plus` / `Team` / `Pro` 订阅可用，模型别名为 `codex-gpt-image-2`，如有需要可自行在其他场景映射回
-  `gpt-image-2`，用于和官网画图区分；也就意味着同一账号会同时有官网和 Codex 两份生图额度
+- 支持 Codex 中的画图接口逆向，仅 `Plus` / `Team` / `Pro` 订阅可用，模型别名为 `codex-gpt-image-2.5`，如有需要可自行在其他场景映射回
+  `gpt-image-2.5`，用于和官网画图区分；也就意味着同一账号会同时有官网和 Codex 两份生图额度
 
 ### 在线画图功能
 
 - 内置在线画图工作台，支持生成、图片编辑与多图组图编辑
-- 支持 `gpt-image-2`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini` 模型选择
+- 支持 `gpt-image-2.5`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`codex-gpt-image-2.5`、`auto`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-6-astra` 模型选择
 - 编辑模式支持参考图上传
 - 前端支持多图生成交互
 - 本地保存图片会话历史，支持回看、删除和清空
@@ -214,7 +214,7 @@ curl http://localhost:8000/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <auth-key>" \
   -d '{
-    "model": "gpt-image-2",
+    "model": "gpt-image-2.5",
     "prompt": "一只漂浮在太空里的猫",
     "n": 1,
     "response_format": "b64_json"
@@ -227,7 +227,7 @@ curl http://localhost:8000/v1/images/generations \
 
 | 字段                | 说明                                                 |
 |:------------------|:---------------------------------------------------|
-| `model`           | 图片模型，当前可用值以 `/v1/models` 返回结果为准，推荐使用 `gpt-image-2` |
+| `model`           | 图片模型，当前可用值以 `/v1/models` 返回结果为准，推荐使用 `gpt-image-2.5`；也可使用 `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst` |
 | `prompt`          | 图片生成提示词                                            |
 | `n`               | 生成数量，当前后端限制为 `1-4`                                 |
 | `response_format` | 当前请求模型中包含该字段，默认值为 `b64_json`                       |
@@ -245,7 +245,7 @@ OpenAI 兼容图片编辑接口，可上传图片文件，也可按官方 JSON �
 ```bash
 curl http://localhost:8000/v1/images/edits \
   -H "Authorization: Bearer <auth-key>" \
-  -F "model=gpt-image-2" \
+  -F "model=gpt-image-2.5" \
   -F "prompt=把这张图改成赛博朋克夜景风格" \
   -F "n=1" \
   -F "image=@./input.png"
@@ -258,7 +258,7 @@ curl http://localhost:8000/v1/images/edits \
   -H "Authorization: Bearer <auth-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-image-2",
+    "model": "gpt-image-2.5",
     "prompt": "把这张图改成赛博朋克夜景风格",
     "images": [
       {"image_url": "https://example.com/input.png"}
@@ -272,7 +272,7 @@ curl http://localhost:8000/v1/images/edits \
 
 | 字段          | 说明                                            |
 |:------------|:----------------------------------------------|
-| `model`     | 图片模型， `gpt-image-2`                           |
+| `model`     | 图片模型，默认 `gpt-image-2.5`                           |
 | `prompt`    | 图片编辑提示词                                       |
 | `n`         | 生成数量，当前后端限制为 `1-4`                            |
 | `image`     | 需要编辑的图片文件，使用 multipart/form-data 上传           |
@@ -294,7 +294,7 @@ curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <auth-key>" \
   -d '{
-    "model": "gpt-image-2",
+    "model": "gpt-image-2.5",
     "messages": [
       {
         "role": "user",
@@ -342,7 +342,7 @@ curl http://localhost:8000/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <auth-key>" \
   -d '{
-    "model": "gpt-5",
+    "model": "gpt-5.6-sol",
     "input": "生成一张未来感城市天际线图片",
     "tools": [
       {
@@ -722,10 +722,10 @@ WebSocket 无法设置自定义请求头，可使用 `?api_key=<auth-key>`；但
 {"type":"response.audio.delta","delta":"<base64-pcm16>"}
 ```
 
-输出分片是连续 PCM（约 40ms），按上游帧尽快转发，不按墙钟二次节拍。短语之间
-的短停顿仍留在 PCM 里，避免误发 `response.audio.done`。客户端应先预填约 400ms
-再连续播放；欠载时重新预填，不要在正播时插入碎静音。一句话结束后会收到
-`response.audio.done`。
+输出分片是连续 PCM（约 40ms），按上游帧尽快转发，不按墙钟二次节拍。段与段之
+间的停顿仍留在 PCM 里；只有上游回到 listening/idle，或静音超过约 2.8 秒，才
+会发 `response.audio.done`。客户端应先预填约 400ms，再按目标水位微调取数速度
+消化长时间播报的时钟漂移，不要在正播时插入碎静音。
 
 建议每个输入分片控制在 `20–100 ms`。单条 Base64 字符串最大为 `512000`
 字符；客户端应持续消费返回消息，并在结束时主动关闭 WebSocket。

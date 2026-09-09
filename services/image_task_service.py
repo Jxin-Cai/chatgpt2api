@@ -12,6 +12,7 @@ from services.config import DATA_DIR, config
 from services.content_filter import request_text
 from services.log_service import LOG_TYPE_CALL, log_service
 from services.protocol import openai_v1_image_edit, openai_v1_image_generations
+from utils.helper import DEFAULT_IMAGE_MODEL
 
 TASK_STATUS_QUEUED = "queued"
 TASK_STATUS_RUNNING = "running"
@@ -218,7 +219,7 @@ class ImageTaskService:
                 "owner_id": owner,
                 "status": TASK_STATUS_QUEUED,
                 "mode": mode,
-                "model": _clean(payload.get("model"), "gpt-image-2"),
+                "model": _clean(payload.get("model"), DEFAULT_IMAGE_MODEL),
                 "size": _clean(payload.get("size")),
                 "quality": _clean(payload.get("quality"), "auto"),
                 "created_at": now,
@@ -232,7 +233,7 @@ class ImageTaskService:
         if should_start:
             thread = threading.Thread(
                 target=self._run_task,
-                args=(key, mode, payload, dict(identity), _clean(payload.get("model"), "gpt-image-2")),
+                args=(key, mode, payload, dict(identity), _clean(payload.get("model"), DEFAULT_IMAGE_MODEL)),
                 name=f"image-task-{task_id[:16]}",
                 daemon=True,
             )
@@ -382,7 +383,7 @@ class ImageTaskService:
                 "owner_id": owner,
                 "status": status,
                 "mode": "edit" if item.get("mode") == "edit" else "generate",
-                "model": _clean(item.get("model"), "gpt-image-2"),
+                "model": _clean(item.get("model"), DEFAULT_IMAGE_MODEL),
                 "size": _clean(item.get("size")),
                 "quality": _clean(item.get("quality"), "auto"),
                 "created_at": _clean(item.get("created_at"), _now_iso()),
@@ -457,7 +458,7 @@ class ImageTaskService:
             if not conversation_id:
                 raise ValueError("task has no conversation_id")
             mode = task.get("mode", "generate")
-            model = task.get("model", "gpt-image-2")
+            model = task.get("model", DEFAULT_IMAGE_MODEL)
             # 将任务状态重置为 running
             self._update_task(key, status=TASK_STATUS_RUNNING, error="")
 

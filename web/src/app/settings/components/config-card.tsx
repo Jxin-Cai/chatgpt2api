@@ -154,10 +154,10 @@ export function ConfigCard() {
             <Input
               value={String(config?.default_upstream_model_name || "")}
               onChange={(event) => setDefaultUpstreamModelName(event.target.value)}
-              placeholder="gpt-5-5"
+              placeholder="gpt-5.6-sol-wm"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">gpt-image-2 发起图片请求时使用的上游模型名称，默认 gpt-5-5。</p>
+            <p className="text-xs text-stone-500">gpt-image-2.5 发起官网画图请求时使用的上游对话模型，默认 gpt-5.6-sol-wm。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">默认思考强度</label>

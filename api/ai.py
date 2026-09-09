@@ -10,6 +10,7 @@ from api.support import require_identity, resolve_image_base_url
 from services.content_filter import check_request, request_shape, request_text
 from services.editable_file_task_service import editable_file_task_service
 from services.log_service import LoggedCall
+from services.openai_backend_api import EDITABLE_FILE_MODEL
 from services.protocol import (
     anthropic_v1_messages,
     openai_v1_chat_complete,
@@ -19,11 +20,12 @@ from services.protocol import (
     openai_v1_response,
     openai_search,
 )
+from utils.helper import DEFAULT_IMAGE_MODEL
 
 
 class ImageGenerationRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
-    model: str = "gpt-image-2"
+    model: str = DEFAULT_IMAGE_MODEL
     n: int = Field(default=1, ge=1, le=4)
     size: str | None = None
     quality: str = "auto"
@@ -201,7 +203,7 @@ def create_router() -> APIRouter:
     @router.post("/v1/ppt/generations")
     async def create_ppt_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
-        await filter_or_log(LoggedCall(identity, "/v1/ppt/generations", "gpt-5-5-thinking", "PPT生成任务", request_text=body.prompt), body.prompt)
+        await filter_or_log(LoggedCall(identity, "/v1/ppt/generations", EDITABLE_FILE_MODEL, "PPT生成任务", request_text=body.prompt), body.prompt)
         return await run_in_threadpool(
             editable_file_task_service.submit_ppt,
             identity,
@@ -214,7 +216,7 @@ def create_router() -> APIRouter:
     @router.post("/v1/psd/generations")
     async def create_psd_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
-        await filter_or_log(LoggedCall(identity, "/v1/psd/generations", "gpt-5-5-thinking", "PSD生成任务", request_text=body.prompt), body.prompt)
+        await filter_or_log(LoggedCall(identity, "/v1/psd/generations", EDITABLE_FILE_MODEL, "PSD生成任务", request_text=body.prompt), body.prompt)
         return await run_in_threadpool(
             editable_file_task_service.submit_psd,
             identity,

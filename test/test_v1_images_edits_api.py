@@ -36,7 +36,7 @@ class ImagesEditsApiTests(unittest.TestCase):
             "/v1/images/edits",
             headers=AUTH_HEADERS,
             json={
-                "model": "gpt-image-2",
+                "model": "gpt-image-2.5",
                 "prompt": "edit",
                 "images": [{"image_url": DATA_IMAGE_URL}],
                 "n": 1,
@@ -57,7 +57,7 @@ class ImagesEditsApiTests(unittest.TestCase):
             "/v1/images/edits",
             headers=AUTH_HEADERS,
             json={
-                "model": "gpt-image-2",
+                "model": "gpt-image-2.5",
                 "prompt": "edit",
                 "images": [{"file_id": "file-abc123"}],
             },

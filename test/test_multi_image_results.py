@@ -160,13 +160,13 @@ class MultiImageResultTests(unittest.TestCase):
         events = list(stream_image_response(
             [ImageOutput(
                 kind="result",
-                model="gpt-image-2",
+                model="gpt-image-2.5",
                 index=1,
                 total=1,
                 data=[{"b64_json": first}, {"b64_json": second}],
             )],
             "draw two options",
-            "gpt-image-2",
+            "gpt-image-2.5",
         ))
 
         done_events = [event for event in events if event.get("type") == "response.output_item.done"]

@@ -3,8 +3,8 @@
 # Only edit ACCESS_TOKEN, then run: python codex_responses_image_test.py
 # Fixed request parameters:
 #   prompt: A highly detailed square 2K image of a quiet futuristic library at sunrise
-#   responses model: gpt-5.5
-#   image model: gpt-image-2
+#   responses model: gpt-5.6-sol
+#   image model: gpt-image-2.5-flare
 #   size: 2048x2048
 #   quality: auto
 #   output_format: png
@@ -49,13 +49,13 @@ def find_images(value):
 def main():
     start_time = time.time()
     body = {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "instructions": "Use the image_generation tool to create exactly one image for the user's request. Return the generated image result.",
         "store": False,
         "input": [{"role": "user", "content": [{"type": "input_text", "text": "A highly detailed square 2K image of a quiet futuristic library at sunrise"}]}],
         "tools": [{
             "type": "image_generation",
-            "model": "gpt-image-2",
+            "model": "gpt-image-2.5-flare",
             "action": "generate",
             "size": "3840x2160",
             "quality": "auto",

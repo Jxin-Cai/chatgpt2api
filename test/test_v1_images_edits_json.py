@@ -39,23 +39,23 @@ class ImageEditsJsonApiTests(unittest.TestCase):
     def test_json_model_omitted_uses_existing_default_logic(self):
         response = self.client.post("/v1/images/edits", headers=AUTH_HEADERS, json={"prompt": "未传 model", "image": PNG_DATA_URL})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.calls[0]["model"], "gpt-image-2")
+        self.assertEqual(self.calls[0]["model"], "gpt-image-2.5")
 
     def test_json_model_is_not_overwritten_when_provided(self):
         response = self.client.post(
             "/v1/images/edits",
             headers=AUTH_HEADERS,
-            json={"model": "codex-gpt-image-2", "prompt": "保留 model", "image": PNG_DATA_URL},
+            json={"model": "codex-gpt-image-2.5", "prompt": "保留 model", "image": PNG_DATA_URL},
         )
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.calls[0]["model"], "codex-gpt-image-2")
+        self.assertEqual(self.calls[0]["model"], "codex-gpt-image-2.5")
 
     def test_image_edit_accepts_json_image_url(self):
         response = self.client.post(
             "/v1/images/edits",
             headers=AUTH_HEADERS,
             json={
-                "model": "gpt-image-2",
+                "model": "gpt-image-2.5",
                 "prompt": "把图片改成夜景风格",
                 "n": 1,
                 "size": "1024x1536",
@@ -92,7 +92,7 @@ class ImageEditsJsonApiTests(unittest.TestCase):
         response = self.client.post(
             "/v1/images/edits",
             headers=AUTH_HEADERS,
-            data={"prompt": "multipart 多图仍然可用", "model": "gpt-image-2", "n": "1"},
+            data={"prompt": "multipart 多图仍然可用", "model": "gpt-image-2.5", "n": "1"},
             files=[
                 ("image", ("one.png", b"one", "image/png")),
                 ("image", ("two.jpg", b"two", "image/jpeg")),
