@@ -770,7 +770,7 @@ export function RealtimePanel() {
             <span
               className="hidden items-center gap-1.5 rounded-full border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] text-white/42 sm:flex"
               title={quality?.candidateType === "relay"
-                ? "WebSocket 平滑中继 · 连续环形缓冲"
+                ? "WebSocket 平滑中继 · 预填约 420ms 后连续播放"
                 : quality
                   ? `RTT ${quality.roundTripTimeMs ?? "-"}ms · 抖动 ${quality.jitterMs ?? "-"}ms · 丢包 ${(quality.packetLossPercent ?? 0).toFixed(1)}% · 补偿 ${(quality.concealedSamplePercent ?? 0).toFixed(1)}% · 缓冲 ${quality.jitterBufferMs ?? "-"}ms · ${quality.candidateType ?? "unknown"}`
                   : "正在采集 WebRTC 质量"}

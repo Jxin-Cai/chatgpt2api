@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import math
 import struct
 import time
 
@@ -17,6 +18,10 @@ from services.realtime.chatgpt_webrtc import (
     resolve_voice,
 )
 from services.realtime.session import decode_data_channel_message, quota_error_from_message
+from services.realtime.playback_buffer import (
+    PlaybackJitterBuffer,
+    simulate_ws_playout,
+)
 from services.realtime.session import (
     PcmOutputAssembler,
     RealtimeQuotaExceeded,
@@ -566,3 +571,94 @@ def test_audio_sender_forwards_contiguous_pcm_without_realtime_pacing():
         assert sent[-1][0] == "response.audio.done"
 
     asyncio.run(run())
+
+
+def _sine_pcm(seconds: float, freq: float = 440, amplitude: int = 8000) -> bytes:
+    count = int(48_000 * seconds)
+    return struct.pack(
+        "<" + "h" * count,
+        *[int(amplitude * math.sin(2 * math.pi * freq * index / 48_000)) for index in range(count)],
+    )
+
+
+def test_assembler_keeps_phrase_pauses_instead_of_ending_early():
+    assembler = PcmOutputAssembler()
+    events = []
+    loud = _sine_pcm(0.04)
+    quiet = b"\x00\x00" * 960
+    events.extend(assembler.push(loud))
+    for _ in range(18):
+        events.extend(assembler.push(quiet))
+    events.extend(assembler.push(loud))
+    assert not any(event.kind == "done" for event in events)
+    pcm = b"".join(event.pcm for event in events if event.kind == "delta")
+    assert len(pcm) >= len(loud) * 2
+
+
+def test_shallow_keep_playing_strategy_underruns_under_jitter():
+    class KeepPlayingBuffer(PlaybackJitterBuffer):
+        def pull(self, n: int):
+            import array
+            out = array.array("h", [0] * n)
+            if not self.playing:
+                if len(self._samples) >= self.prefill:
+                    self.playing = True
+                else:
+                    return out
+            got = min(n, len(self._samples))
+            if got:
+                out[:got] = self._samples[:got]
+                del self._samples[:got]
+                self.played += got
+            if got < n:
+                self.underrun_samples += n - got
+            return out
+
+    report = simulate_ws_playout(
+        _sine_pcm(3.0),
+        assembler=PcmOutputAssembler(chunk_bytes=int(48_000 * 0.08) * 2, max_silence_bytes=int(48_000 * 0.45) * 2),
+        buffer=KeepPlayingBuffer(prefill_seconds=0.16, max_prefill_seconds=0.16),
+        jitter_max_s=0.08,
+        spike_every=8,
+        spike_s=0.12,
+    )
+    assert report.underrun_samples > 0
+
+
+def test_jitter_buffer_plays_continuous_speech_without_underrun():
+    report = simulate_ws_playout(
+        _sine_pcm(4.0),
+        jitter_max_s=0.08,
+        spike_every=12,
+        spike_s=0.12,
+    )
+    assert report.done_events == 1
+    assert report.underrun_samples == 0
+    assert report.rebuffer_events == 0
+    assert report.played >= int(48_000 * 3.5)
+
+
+def test_jitter_buffer_stays_gapless_under_brutal_network_jitter():
+    report = simulate_ws_playout(
+        _sine_pcm(6.0),
+        jitter_max_s=0.12,
+        spike_every=6,
+        spike_s=0.22,
+    )
+    assert report.underrun_samples == 0
+    assert report.rebuffer_events == 0
+    assert report.played == 48_000 * 6
+
+
+def test_jitter_buffer_survives_phrase_pause_without_cutting_audio():
+    speech = _sine_pcm(1.0)
+    pause = b"\x00\x00" * int(48_000 * 0.35)
+    report = simulate_ws_playout(
+        speech + pause + speech,
+        jitter_max_s=0.06,
+        spike_every=0,
+        spike_s=0.0,
+    )
+    assert report.done_events == 1
+    assert report.underrun_samples == 0
+    assert report.rebuffer_events == 0

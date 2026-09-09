@@ -8,7 +8,8 @@ import {
 
 const SAMPLE_RATE = 48_000;
 const CAPTURE_CHUNK_SAMPLES = 1_920; // 40ms
-const PLAYOUT_LEAD_SECONDS = 0.16;
+const PLAYOUT_LEAD_SECONDS = 0.42;
+const PLAYOUT_MAX_LEAD_SECONDS = 0.84;
 const CONNECTION_TIMEOUT_MS = 35_000;
 
 class LinearPcmResampler {
@@ -54,6 +55,75 @@ class LinearPcmResampler {
   }
 }
 
+class BufferSourceScheduler {
+  private nextAt = 0;
+  private pending: Float32Array[] = [];
+  private pendingSamples = 0;
+  private buffering = true;
+
+  constructor(
+    private readonly context: AudioContext,
+    private readonly output: AudioNode,
+    private readonly prefillSamples: number,
+    private readonly activeSources: Set<AudioBufferSourceNode>,
+  ) {}
+
+  push(samples: Float32Array): void {
+    if (this.buffering) {
+      this.pending.push(samples);
+      this.pendingSamples += samples.length;
+      if (this.pendingSamples >= this.prefillSamples) this.flushPending();
+      return;
+    }
+    if (this.nextAt < this.context.currentTime + 0.02) {
+      this.buffering = true;
+      this.pending = [samples];
+      this.pendingSamples = samples.length;
+      this.nextAt = 0;
+      return;
+    }
+    this.start(samples, this.nextAt);
+    this.nextAt += samples.length / this.context.sampleRate;
+  }
+
+  end(): void {
+    if (this.buffering && this.pendingSamples > 0) this.flushPending();
+  }
+
+  stop(): void {
+    this.pending = [];
+    this.pendingSamples = 0;
+    this.buffering = true;
+    this.nextAt = 0;
+  }
+
+  private flushPending(): void {
+    let at = this.context.currentTime + 0.02;
+    for (const chunk of this.pending) {
+      this.start(chunk, at);
+      at += chunk.length / this.context.sampleRate;
+    }
+    this.nextAt = at;
+    this.pending = [];
+    this.pendingSamples = 0;
+    this.buffering = false;
+  }
+
+  private start(samples: Float32Array, when: number): void {
+    const buffer = this.context.createBuffer(1, samples.length, this.context.sampleRate);
+    buffer.getChannelData(0).set(samples);
+    const source = this.context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.output);
+    source.start(when);
+    this.activeSources.add(source);
+    source.onended = () => {
+      source.disconnect();
+      this.activeSources.delete(source);
+    };
+  }
+}
+
 function websocketUrl(baseUrl: string, voice: string): string {
   const url = new URL("/v1/realtime", baseUrl || window.location.origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -91,7 +161,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
   private playbackStreamDestination: MediaStreamAudioDestinationNode | null = null;
   private remoteStream: MediaStream | null = null;
   private activeSources = new Set<AudioBufferSourceNode>();
-  private nextPlaybackAt = 0;
+  private fallbackScheduler: BufferSourceScheduler | null = null;
   private playbackResampler: LinearPcmResampler | null = null;
   private microphoneEnabled = true;
   private connected = false;
@@ -266,6 +336,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     this.playbackNode = null;
     this.playbackGain = null;
     this.playbackResampler = null;
+    this.fallbackScheduler = null;
     this.playbackStreamDestination = null;
     this.remoteStream = null;
     this.microphone?.getTracks().forEach((track) => track.stop());
@@ -310,6 +381,12 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     this.captureSink = sink;
 
     this.playbackResampler = new LinearPcmResampler(SAMPLE_RATE, context.sampleRate);
+    this.fallbackScheduler = new BufferSourceScheduler(
+      context,
+      playbackGain,
+      Math.round(context.sampleRate * PLAYOUT_LEAD_SECONDS),
+      this.activeSources,
+    );
 
     try {
       const processorSource = `
@@ -346,9 +423,10 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
           constructor(options) {
             super();
             const opts = (options && options.processorOptions) || {};
-            const ring = Math.max(8, opts.ringSamples || 96000);
+            const ring = Math.max(128, opts.ringSamples || 144000);
             this.buffer = new Float32Array(ring);
-            this.prefill = Math.max(128, opts.prefillSamples || Math.round(ring * 0.08));
+            this.prefill = Math.max(128, opts.prefillSamples || Math.round(ring * 0.18));
+            this.maxPrefill = Math.max(this.prefill, opts.maxPrefillSamples || this.prefill * 2);
             this.read = 0;
             this.write = 0;
             this.available = 0;
@@ -366,19 +444,13 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
               }
               if (data && data.type === 'end') {
                 this.ending = true;
+                if (this.available > 0) this.playing = true;
                 return;
               }
               let samples = data instanceof Float32Array ? data : new Float32Array(data);
-              if (samples.length > this.buffer.length) {
-                samples = samples.subarray(samples.length - this.buffer.length);
-              }
-              let space = this.buffer.length - this.available;
-              if (samples.length > space) {
-                const drop = samples.length - space;
-                this.read = (this.read + drop) % this.buffer.length;
-                this.available -= drop;
-                space = this.buffer.length - this.available;
-              }
+              const space = this.buffer.length - this.available;
+              if (space <= 0) return;
+              if (samples.length > space) samples = samples.subarray(0, space);
               let offset = 0;
               while (offset < samples.length) {
                 const count = Math.min(samples.length - offset, this.buffer.length - this.write);
@@ -387,28 +459,35 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
                 this.available += count;
                 offset += count;
               }
-              if (!this.playing && this.available >= this.prefill) this.playing = true;
+              if (!this.playing && !this.ending && this.available >= this.prefill) this.playing = true;
             };
           }
           process(_, outputs) {
             const output = outputs[0] && outputs[0][0];
             if (!output) return true;
             if (!this.playing) {
-              output.fill(0);
-              return true;
+              if (!this.ending && this.available >= this.prefill) this.playing = true;
+              else {
+                output.fill(0);
+                return true;
+              }
             }
             for (let i = 0; i < output.length; i += 1) {
               if (this.available > 0) {
                 output[i] = this.buffer[this.read];
                 this.read = (this.read + 1) % this.buffer.length;
                 this.available -= 1;
+              } else if (this.ending) {
+                output.fill(0, i);
+                this.playing = false;
+                this.ending = false;
+                break;
               } else {
-                output[i] = 0;
+                output.fill(0, i);
+                this.playing = false;
+                this.prefill = Math.min(this.maxPrefill, this.prefill + output.length * 8);
+                break;
               }
-            }
-            if (this.ending && this.available <= 0) {
-              this.playing = false;
-              this.ending = false;
             }
             return true;
           }
@@ -433,8 +512,9 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         numberOfOutputs: 1,
         outputChannelCount: [1],
         processorOptions: {
-          ringSamples: Math.max(context.sampleRate * 2, 96_000),
+          ringSamples: Math.max(context.sampleRate * 3, 144_000),
           prefillSamples: Math.round(context.sampleRate * PLAYOUT_LEAD_SECONDS),
+          maxPrefillSamples: Math.round(context.sampleRate * PLAYOUT_MAX_LEAD_SECONDS),
         },
       });
       playback.connect(playbackGain);
@@ -487,30 +567,17 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
       this.playbackNode.port.postMessage(samples, [samples.buffer]);
       return;
     }
-
-    const buffer = context.createBuffer(1, samples.length, context.sampleRate);
-    buffer.getChannelData(0).set(samples);
-    const source = context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(output);
-    const now = context.currentTime;
-    if (this.nextPlaybackAt <= 0) this.nextPlaybackAt = now + PLAYOUT_LEAD_SECONDS;
-    else if (this.nextPlaybackAt < now) this.nextPlaybackAt = now;
-    source.start(this.nextPlaybackAt);
-    this.nextPlaybackAt += buffer.duration;
-    this.activeSources.add(source);
-    source.onended = () => {
-      source.disconnect();
-      this.activeSources.delete(source);
-    };
+    this.fallbackScheduler?.push(samples);
   }
 
   private endScheduledAudio(): void {
     this.playbackNode?.port.postMessage({ type: "end" });
+    this.fallbackScheduler?.end();
   }
 
   private stopScheduledAudio(): void {
     this.playbackNode?.port.postMessage({ type: "stop" });
+    this.fallbackScheduler?.stop();
     this.playbackResampler?.reset();
     for (const source of this.activeSources) {
       try {
@@ -521,6 +588,5 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
       source.disconnect();
     }
     this.activeSources.clear();
-    this.nextPlaybackAt = 0;
   }
 }
