@@ -23,8 +23,12 @@ AUDIO_OUT_QUEUE_SIZE = 48
 EVENT_OUT_QUEUE_SIZE = 128
 CHATGPT_WEB_REALTIME_MODEL = "chatgpt-web-voice"
 OUTPUT_CHUNK_SECONDS = 0.04
-MAX_TRAILING_SILENCE_SECONDS = 1.0
+MAX_TRAILING_SILENCE_SECONDS = 2.8
 SILENCE_RMS_THRESHOLD = 100.0
+END_AUDIO_STATES = frozenset({"listening", "idle"})
+TRANSCRIPT_EVENT = "chat_message_delta"
+GAP_FILL_THRESHOLD_SECONDS = 0.05
+GAP_FILL_MAX_SECONDS = 1.2
 
 
 class RealtimeQuotaExceeded(RuntimeError):
@@ -123,8 +127,9 @@ class AudioProtocolEvent:
 class PcmOutputAssembler:
     """把上游 PCM 收成连续、等长的协议分片。
 
-    WebRTC 收帧本身已经是实时节拍。这里只做聚合和句末静音裁剪，不再按墙钟
-    sleep；否则客户端永远垫不起播放缓冲，任何一次发送抖动都会听成卡顿。
+    WebRTC 收帧本身已经是实时节拍。这里只做聚合，丢弃开场静音，并把句中
+    停顿原样送给客户端。不再按静音超时发送 audio.done——长播报里的换气/
+    分段停顿不是一轮结束，提前 done 会让客户端整段重预填。
     """
 
     def __init__(
@@ -144,6 +149,10 @@ class PcmOutputAssembler:
         self._speaking = False
         self._silence_bytes = 0
 
+    @property
+    def speaking(self) -> bool:
+        return self._speaking
+
     def push(self, pcm: bytes) -> list[AudioProtocolEvent]:
         if not pcm:
             return []
@@ -157,14 +166,7 @@ class PcmOutputAssembler:
             self._speaking = True
             self._silence_bytes = 0
         self._buffer.extend(pcm)
-
-        end_utterance = is_silence and self._silence_bytes >= self.max_silence_bytes
-        events = self._flush(force=end_utterance)
-        if end_utterance:
-            events.append(AudioProtocolEvent("done"))
-            self._speaking = False
-            self._silence_bytes = 0
-        return events
+        return self._flush(force=False)
 
     def finish(self) -> list[AudioProtocolEvent]:
         events = self._flush(force=True)
@@ -225,6 +227,9 @@ class RealtimeSession:
         self._event_out: asyncio.Queue[str] = asyncio.Queue(maxsize=EVENT_OUT_QUEUE_SIZE)
         self._out_ready = asyncio.Event()
         self._writer_started = False
+        self._output_assembler = PcmOutputAssembler()
+        self._end_audio_output = False
+        self._latest_transcript: str | None = None
         self._start_time = time.time()
 
     async def run(self) -> None:
@@ -496,7 +501,7 @@ class RealtimeSession:
         # PCM16 mono，因此必须显式下混；直接读取 plane 会把 L/R 交错样本当
         # 成单声道，播放时长也会翻倍。
         resampler = AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
-        assembler = PcmOutputAssembler()
+        assembler = self._output_assembler
         recv_count = 0
 
         async def emit(events: list[AudioProtocolEvent]) -> None:
@@ -508,6 +513,10 @@ class RealtimeSession:
                     await self._send_event("response.audio.done", {})
 
         while not self._closed:
+            if self._end_audio_output:
+                self._end_audio_output = False
+                await emit(assembler.finish())
+            waited_at = time.monotonic()
             try:
                 frame = await asyncio.wait_for(track.recv(), timeout=5)
             except asyncio.TimeoutError:
@@ -516,6 +525,14 @@ class RealtimeSession:
                 if not self._closed:
                     logger.warning(f"[realtime] Remote audio track ended: {exc}")
                 break
+
+            # ChatGPT 上行在换气/分句时经常 DTX 停包。这里按等待时长补静音，
+            # 避免客户端播放指针先跑空再整段重预填。
+            waited = time.monotonic() - waited_at
+            if assembler.speaking and waited >= GAP_FILL_THRESHOLD_SECONDS:
+                pad_s = min(max(0.0, waited - 0.02), GAP_FILL_MAX_SECONDS)
+                if pad_s >= 0.02:
+                    await emit(assembler.push(b"\x00\x00" * int(SAMPLE_RATE * pad_s)))
 
             recv_count += 1
             for output_frame, pcm_bytes in resample_to_pcm16_mono(resampler, frame):
@@ -549,8 +566,12 @@ class RealtimeSession:
                 payload = data.get("payload")
                 if isinstance(payload, dict):
                     await self._send_event(event_type, payload)
+                    new_state = payload.get("new_state")
                 else:
                     await self._send_event(event_type, data)
+                    new_state = data.get("new_state")
+                if event_type == "state_update" and new_state in END_AUDIO_STATES:
+                    self._end_audio_output = True
                 quota_error = quota_error_from_message(data)
                 if quota_error:
                     if self._account_limited_callback:
@@ -560,23 +581,28 @@ class RealtimeSession:
             except (json.JSONDecodeError, TypeError):
                 await self._send_event("datachannel.message", {"raw": msg[:1000]})
 
+    def _outbound_idle(self) -> bool:
+        return self._audio_out.empty() and self._latest_transcript is None and self._event_out.empty()
+
     async def _ws_writer(self) -> None:
-        """单写者：音频优先于转写/遥测，避免共用锁把播报卡出缺口。"""
+        """单写者：音频优先；转写只保留最新一帧，避免把播报卡出缺口。"""
         while not self._closed:
-            if self._audio_out.empty() and self._event_out.empty():
+            if self._outbound_idle():
                 self._out_ready.clear()
-                if self._audio_out.empty() and self._event_out.empty():
+                if self._outbound_idle():
                     try:
                         await asyncio.wait_for(self._out_ready.wait(), timeout=2)
                     except asyncio.TimeoutError:
                         continue
                 continue
             try:
-                payload = (
-                    self._audio_out.get_nowait()
-                    if not self._audio_out.empty()
-                    else self._event_out.get_nowait()
-                )
+                if not self._audio_out.empty():
+                    payload = self._audio_out.get_nowait()
+                elif self._latest_transcript is not None:
+                    payload = self._latest_transcript
+                    self._latest_transcript = None
+                else:
+                    payload = self._event_out.get_nowait()
             except asyncio.QueueEmpty:
                 continue
             try:
@@ -596,6 +622,8 @@ class RealtimeSession:
                 return
             if event_type.startswith("response.audio."):
                 await self._audio_out.put(payload)
+            elif event_type == TRANSCRIPT_EVENT:
+                self._latest_transcript = payload
             else:
                 if self._event_out.full():
                     try:

@@ -8,13 +8,13 @@ import {
 
 const SAMPLE_RATE = 48_000;
 const CAPTURE_CHUNK_SAMPLES = 1_920; // 40ms
-const PLAYOUT_LEAD_SECONDS = 0.42;
-const PLAYOUT_MAX_LEAD_SECONDS = 0.84;
+const PLAYOUT_LEAD_SECONDS = 0.5;
+const PLAYOUT_MAX_LEAD_SECONDS = 1.0;
 const CONNECTION_TIMEOUT_MS = 35_000;
 
 class LinearPcmResampler {
   private leftover = new Float32Array(0);
-  private position = 0;
+  private posNum = 0;
 
   constructor(
     private readonly sourceRate: number,
@@ -23,7 +23,7 @@ class LinearPcmResampler {
 
   reset(): void {
     this.leftover = new Float32Array(0);
-    this.position = 0;
+    this.posNum = 0;
   }
 
   push(pcm: Int16Array): Float32Array {
@@ -34,24 +34,20 @@ class LinearPcmResampler {
     const combined = new Float32Array(this.leftover.length + incoming.length);
     combined.set(this.leftover);
     combined.set(incoming, this.leftover.length);
-    const ratio = this.sourceRate / this.targetRate;
-    const outLength = Math.floor((combined.length - this.position - 1) / ratio);
-    if (outLength <= 0) {
-      this.leftover = combined;
-      return new Float32Array(0);
+    const out: number[] = [];
+    const dstRate = this.targetRate;
+    const srcRate = this.sourceRate;
+    while (true) {
+      const index = Math.floor(this.posNum / dstRate);
+      if (index + 1 >= combined.length) break;
+      const frac = (this.posNum - index * dstRate) / dstRate;
+      out.push(combined[index] * (1 - frac) + combined[index + 1] * frac);
+      this.posNum += srcRate;
     }
-    const out = new Float32Array(outLength);
-    let position = this.position;
-    for (let index = 0; index < outLength; index += 1) {
-      const i0 = Math.floor(position);
-      const frac = position - i0;
-      out[index] = combined[i0] * (1 - frac) + combined[i0 + 1] * frac;
-      position += ratio;
-    }
-    const consumed = Math.floor(position);
+    const consumed = Math.floor(this.posNum / dstRate);
     this.leftover = combined.slice(consumed);
-    this.position = position - consumed;
-    return out;
+    this.posNum -= consumed * dstRate;
+    return Float32Array.from(out);
   }
 }
 
@@ -76,14 +72,12 @@ class BufferSourceScheduler {
       return;
     }
     if (this.nextAt < this.context.currentTime + 0.02) {
-      this.buffering = true;
-      this.pending = [samples];
-      this.pendingSamples = samples.length;
-      this.nextAt = 0;
-      return;
+      this.nextAt = this.context.currentTime + 0.02;
     }
-    this.start(samples, this.nextAt);
-    this.nextAt += samples.length / this.context.sampleRate;
+    const lead = this.nextAt - this.context.currentTime;
+    const rate = lead > 0.8 ? 1.004 : lead < 0.26 ? 0.996 : 1;
+    this.start(samples, this.nextAt, rate);
+    this.nextAt += samples.length / this.context.sampleRate / rate;
   }
 
   end(): void {
@@ -100,7 +94,7 @@ class BufferSourceScheduler {
   private flushPending(): void {
     let at = this.context.currentTime + 0.02;
     for (const chunk of this.pending) {
-      this.start(chunk, at);
+      this.start(chunk, at, 1);
       at += chunk.length / this.context.sampleRate;
     }
     this.nextAt = at;
@@ -109,11 +103,12 @@ class BufferSourceScheduler {
     this.buffering = false;
   }
 
-  private start(samples: Float32Array, when: number): void {
+  private start(samples: Float32Array, when: number, rate: number): void {
     const buffer = this.context.createBuffer(1, samples.length, this.context.sampleRate);
     buffer.getChannelData(0).set(samples);
     const source = this.context.createBufferSource();
     source.buffer = buffer;
+    source.playbackRate.value = rate;
     source.connect(this.output);
     source.start(when);
     this.activeSources.add(source);
@@ -423,15 +418,20 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
           constructor(options) {
             super();
             const opts = (options && options.processorOptions) || {};
-            const ring = Math.max(128, opts.ringSamples || 144000);
+            const ring = Math.max(128, opts.ringSamples || 192000);
             this.buffer = new Float32Array(ring);
-            this.prefill = Math.max(128, opts.prefillSamples || Math.round(ring * 0.18));
+            this.prefill = Math.max(128, opts.prefillSamples || Math.round(ring * 0.12));
             this.maxPrefill = Math.max(this.prefill, opts.maxPrefillSamples || this.prefill * 2);
+            this.low = Math.max(1, Math.round(this.prefill * 0.62));
+            this.high = Math.max(this.prefill + 1, Math.round(this.prefill * 1.9));
             this.read = 0;
             this.write = 0;
             this.available = 0;
             this.playing = false;
             this.ending = false;
+            this.lastSample = 0;
+            this.hunger = 0;
+            this.maxHunger = Math.round((sampleRate || 48000) * 1.2 / 128);
             this.port.onmessage = (event) => {
               const data = event.data;
               if (data && data.type === 'stop') {
@@ -440,6 +440,8 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
                 this.available = 0;
                 this.playing = false;
                 this.ending = false;
+                this.lastSample = 0;
+                this.hunger = 0;
                 return;
               }
               if (data && data.type === 'end') {
@@ -447,6 +449,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
                 if (this.available > 0) this.playing = true;
                 return;
               }
+              this.ending = false;
               let samples = data instanceof Float32Array ? data : new Float32Array(data);
               const space = this.buffer.length - this.available;
               if (space <= 0) return;
@@ -459,36 +462,57 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
                 this.available += count;
                 offset += count;
               }
-              if (!this.playing && !this.ending && this.available >= this.prefill) this.playing = true;
+              if (!this.playing && (this.available >= this.prefill || this.hunger > 0)) this.playing = true;
             };
+          }
+          readSample() {
+            const sample = this.buffer[this.read];
+            this.read = (this.read + 1) % this.buffer.length;
+            this.available -= 1;
+            return sample;
           }
           process(_, outputs) {
             const output = outputs[0] && outputs[0][0];
             if (!output) return true;
+            const frames = output.length;
             if (!this.playing) {
-              if (!this.ending && this.available >= this.prefill) this.playing = true;
-              else {
+              if (this.available >= this.prefill || (this.ending && this.available > 0) || (this.hunger > 0 && this.available > 0)) {
+                this.playing = true;
+              } else {
                 output.fill(0);
                 return true;
               }
             }
-            for (let i = 0; i < output.length; i += 1) {
-              if (this.available > 0) {
-                output[i] = this.buffer[this.read];
-                this.read = (this.read + 1) % this.buffer.length;
-                this.available -= 1;
-              } else if (this.ending) {
-                output.fill(0, i);
+            let consume = frames;
+            if (!this.ending) {
+              if (this.available < this.low) consume = Math.max(1, frames - 1);
+              else if (this.available > this.high) consume = frames + 1;
+            }
+            if (this.available <= 0) {
+              if (this.ending) {
+                output.fill(0);
                 this.playing = false;
                 this.ending = false;
-                break;
-              } else {
-                output.fill(0, i);
-                this.playing = false;
-                this.prefill = Math.min(this.maxPrefill, this.prefill + output.length * 8);
-                break;
+                this.hunger = 0;
+                return true;
               }
+              output.fill(this.lastSample);
+              this.hunger += 1;
+              if (this.hunger >= this.maxHunger) {
+                this.playing = false;
+                this.prefill = Math.min(this.maxPrefill, this.prefill + frames * 8);
+                this.low = Math.max(1, Math.round(this.prefill * 0.62));
+                this.high = Math.max(this.prefill + 1, Math.round(this.prefill * 1.9));
+                this.hunger = 0;
+              }
+              return true;
             }
+            this.hunger = 0;
+            const got = Math.min(consume, this.available);
+            for (let i = 0; i < got; i += 1) output[i] = this.readSample();
+            this.lastSample = got > 0 ? output[got - 1] : this.lastSample;
+            if (got < frames) output.fill(this.lastSample, got);
+            else if (consume > frames && this.available > 0) this.readSample();
             return true;
           }
         }
@@ -512,7 +536,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         numberOfOutputs: 1,
         outputChannelCount: [1],
         processorOptions: {
-          ringSamples: Math.max(context.sampleRate * 3, 144_000),
+          ringSamples: Math.max(context.sampleRate * 4, 192_000),
           prefillSamples: Math.round(context.sampleRate * PLAYOUT_LEAD_SECONDS),
           maxPrefillSamples: Math.round(context.sampleRate * PLAYOUT_MAX_LEAD_SECONDS),
         },

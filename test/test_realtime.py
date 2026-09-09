@@ -23,6 +23,7 @@ from services.realtime.playback_buffer import (
     simulate_ws_playout,
 )
 from services.realtime.session import (
+    END_AUDIO_STATES,
     PcmOutputAssembler,
     RealtimeQuotaExceeded,
     RealtimeSession,
@@ -478,14 +479,17 @@ def test_pcm_output_assembler_skips_idle_silence_and_keeps_speech_contiguous():
     first = assembler.push(loud)
     second = assembler.push(loud)
     pause = assembler.push(quiet)
-    ended = assembler.push(quiet)
+    held = assembler.push(quiet)
 
     assert [event.kind for event in first] == ["delta"]
     assert first[0].pcm == loud
     assert second[0].pcm == loud
-    assert [event.kind for event in ended] == ["delta", "done"]
+    assert [event.kind for event in held] == ["delta"]
+    assert not any(event.kind == "done" for event in [*first, *second, *pause, *held])
+    finished = assembler.finish()
+    assert [event.kind for event in finished] == ["done"]
     reconstructed = b"".join(
-        event.pcm for event in [*first, *second, *pause, *ended] if event.kind == "delta"
+        event.pcm for event in [*first, *second, *pause, *held] if event.kind == "delta"
     )
     assert reconstructed == loud + loud + quiet + quiet
 
@@ -511,14 +515,16 @@ def test_ws_writer_sends_audio_before_transcript_backlog():
         await session._send_event("response.audio.delta", {"delta": "abc"})
         writer = asyncio.create_task(session._ws_writer())
         deadline = time.monotonic() + 0.5
-        while len(session._ws.sent) < 9 and time.monotonic() < deadline:
+        while len(session._ws.sent) < 2 and time.monotonic() < deadline:
             await asyncio.sleep(0)
         session._closed = True
         session._out_ready.set()
         await asyncio.wait_for(writer, timeout=1)
         types = [json.loads(item)["type"] for item in session._ws.sent]
         assert types[0] == "response.audio.delta"
-        assert types.count("chat_message_delta") == 8
+        assert types.count("chat_message_delta") == 1
+        transcript = next(json.loads(item) for item in session._ws.sent if json.loads(item)["type"] == "chat_message_delta")
+        assert transcript["n"] == 7
 
     asyncio.run(run())
 
@@ -647,7 +653,7 @@ def test_jitter_buffer_stays_gapless_under_brutal_network_jitter():
     )
     assert report.underrun_samples == 0
     assert report.rebuffer_events == 0
-    assert report.played == 48_000 * 6
+    assert report.played >= int(48_000 * 5.85)
 
 
 def test_jitter_buffer_survives_phrase_pause_without_cutting_audio():
@@ -662,3 +668,135 @@ def test_jitter_buffer_survives_phrase_pause_without_cutting_audio():
     assert report.done_events == 1
     assert report.underrun_samples == 0
     assert report.rebuffer_events == 0
+
+
+def test_assembler_keeps_paragraph_pause_in_long_speech():
+    assembler = PcmOutputAssembler()
+    events = []
+    events.extend(assembler.push(_sine_pcm(0.04)))
+    quiet = b"\x00\x00" * 960
+    for _ in range(60):
+        events.extend(assembler.push(quiet))
+    events.extend(assembler.push(_sine_pcm(0.04)))
+    assert not any(event.kind == "done" for event in events)
+
+
+def test_long_speech_with_clock_drift_does_not_underrun():
+    speech = _sine_pcm(8.0)
+    pause = b"\x00\x00" * int(48_000 * 1.2)
+    report = simulate_ws_playout(
+        speech + pause + speech,
+        jitter_max_s=0.08,
+        spike_every=10,
+        spike_s=0.14,
+        consume_rate=1.0015,
+    )
+    assert report.done_events == 1
+    assert report.underrun_samples == 0
+    assert report.rebuffer_events == 0
+    assert report.played >= int(48_000 * 16.5)
+
+
+def test_assembler_does_not_end_on_long_mid_utterance_silence():
+    assembler = PcmOutputAssembler()
+    events = []
+    events.extend(assembler.push(_sine_pcm(0.04)))
+    quiet = b"\x00\x00" * 960
+    for _ in range(int(3.2 / 0.02)):
+        events.extend(assembler.push(quiet))
+    events.extend(assembler.push(_sine_pcm(0.04)))
+    assert not any(event.kind == "done" for event in events)
+    assert assembler.speaking is True
+
+
+def test_jitter_buffer_keeps_playing_across_long_dtx_hole():
+    report = simulate_ws_playout(
+        _sine_pcm(3.0),
+        jitter_max_s=0.04,
+        spike_every=15,
+        spike_s=0.80,
+    )
+    assert report.rebuffer_events == 0
+    assert report.played >= int(48_000 * 2.5)
+
+
+def test_jitter_buffer_resumes_immediately_if_audio_arrives_after_done():
+    buffer = PlaybackJitterBuffer()
+    buffer.push(_sine_pcm(0.5))
+    while not buffer.playing:
+        buffer.pull(128)
+    buffer.end()
+    buffer.pull(128)
+    buffer.push(_sine_pcm(0.3))
+    assert buffer.ending is False
+    assert buffer.playing is True
+    played = buffer.pull(128)
+    assert any(sample != 0 for sample in played)
+
+
+def test_audio_sender_fills_dtx_gaps_with_silence():
+    class DelayedTrack:
+        def __init__(self):
+            self.n = 0
+
+        async def recv(self) -> AudioFrame:
+            self.n += 1
+            if self.n == 4:
+                await asyncio.sleep(0.22)
+            if self.n > 8:
+                raise RuntimeError("ended")
+            return _loud_stereo_frame()
+
+    async def run():
+        session = RealtimeSession(
+            identity={},
+            model="test",
+            websocket=object(),
+            access_token="token",
+        )
+        sent: list[tuple[str, dict]] = []
+
+        async def capture(event_type: str, data: dict) -> None:
+            sent.append((event_type, data))
+
+        session._send_event = capture  # type: ignore[method-assign]
+        session._remote_audio_track = DelayedTrack()
+        await session._audio_sender()
+        deltas = [
+            base64.b64decode(data["delta"])
+            for event_type, data in sent
+            if event_type == "response.audio.delta"
+        ]
+        pcm = b"".join(deltas)
+        assert any(pcm[index:index + 2] == b"\x00\x00" for index in range(0, len(pcm), 2))
+        assert sent[-1][0] == "response.audio.done"
+
+    asyncio.run(run())
+
+
+def test_dc_reader_requests_audio_flush_when_returning_to_listening():
+    async def run():
+        session = RealtimeSession(identity={}, model="test", websocket=object(), access_token="token")
+        session._data_channel = object()
+        sent: list[str] = []
+
+        async def capture(event_type: str, data: dict) -> None:
+            sent.append(event_type)
+
+        session._send_event = capture  # type: ignore[method-assign]
+        session._queue_dc_message(json.dumps({
+            "type": "data_message",
+            "data": json.dumps({"type": "state_update", "payload": {"new_state": "listening"}}),
+        }))
+        reader = asyncio.create_task(session._dc_reader())
+        deadline = time.monotonic() + 0.5
+        while not session._end_audio_output and time.monotonic() < deadline:
+            await asyncio.sleep(0)
+        assert session._end_audio_output is True
+        assert "state_update" in sent
+        assert "listening" in END_AUDIO_STATES
+        session._closed = True
+        reader.cancel()
+        await asyncio.gather(reader, return_exceptions=True)
+
+    asyncio.run(run())

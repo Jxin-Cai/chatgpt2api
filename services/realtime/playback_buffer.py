@@ -11,14 +11,14 @@ from services.realtime.session import PcmOutputAssembler
 QUANTUM = 128
 DEFAULT_PREFILL_SECONDS = 0.42
 DEFAULT_MAX_PREFILL_SECONDS = 0.84
-DEFAULT_MAX_SECONDS = 2.4
+DEFAULT_MAX_SECONDS = 3.6
 
 
 class PlaybackJitterBuffer:
     """客户端播放抖动缓冲的参考实现。
 
-    未凑够预填时只出静音；一旦开播就连续取数。空仓时停下来重新预填，
-    绝不在播放中插入碎零（那会把一句话切成卡顿）。
+    未凑够预填时只出静音；开播后按目标水位微调取数速度。短缺口保持
+    开播并重复末样，避免整段重预填把一句话切成卡顿。
     """
 
     def __init__(
@@ -39,6 +39,15 @@ class PlaybackJitterBuffer:
         self.underrun_samples = 0
         self.rebuffer_events = 0
         self.dropped_incoming = 0
+        self.rate_adjusts = 0
+        self._last = 0
+        self._hunger = 0
+        self._hunger_limit = int(sample_rate * 1.2)
+        self._retarget()
+
+    def _retarget(self) -> None:
+        self.low = max(1, int(self.prefill * 0.62))
+        self.high = min(self.max_samples - 1, max(self.prefill + 1, int(self.prefill * 1.9)))
 
     @property
     def available(self) -> int:
@@ -60,7 +69,11 @@ class PlaybackJitterBuffer:
             self.dropped_incoming += len(incoming) - room
             incoming = incoming[:room]
         self._samples.extend(incoming)
-        if not self.playing and not self.ending and len(self._samples) >= self.prefill:
+        if self.ending:
+            self.ending = False
+        if not self.playing and len(self._samples) >= self.prefill:
+            self.playing = True
+        elif not self.playing and self._hunger > 0 and self._samples:
             self.playing = True
 
     def end(self) -> None:
@@ -72,28 +85,61 @@ class PlaybackJitterBuffer:
         self._samples = array.array("h")
         self.playing = False
         self.ending = False
+        self._hunger = 0
+        self._last = 0
 
     def pull(self, n: int) -> array.array:
         out = array.array("h", [0] * n)
         if not self.playing:
-            if not self.ending and len(self._samples) >= self.prefill:
+            if self._samples and (self.ending or len(self._samples) >= self.prefill or self._hunger > 0):
                 self.playing = True
             else:
                 return out
-        got = min(n, len(self._samples))
+
+        consume = n
+        if not self.ending:
+            if len(self._samples) < self.low:
+                consume = max(1, n - 1)
+                self.rate_adjusts += 1
+            elif len(self._samples) > self.high:
+                consume = n + 1
+                self.rate_adjusts += 1
+
+        got = min(consume, len(self._samples))
+        taken = self._samples[:got]
         if got:
-            out[:got] = self._samples[:got]
             del self._samples[:got]
-            self.played += got
-        if got < n:
+            self._hunger = 0
+            self._last = int(taken[-1])
+
+        if got == 0:
             if self.ending:
                 self.playing = False
                 self.ending = False
-            else:
-                self.underrun_samples += n - got
-                self.rebuffer_events += 1
+                return out
+            out[:] = array.array("h", [self._last] * n)
+            self.underrun_samples += n
+            self._hunger += n
+            if self._hunger >= self._hunger_limit:
                 self.playing = False
                 self.prefill = min(self.max_prefill, self.prefill + n * 8)
+                self._retarget()
+                self._hunger = 0
+                self.rebuffer_events += 1
+            self.played += n
+            return out
+
+        if got >= n:
+            out[:] = taken[:n]
+            if got > n:
+                self._last = int(taken[n - 1])
+        else:
+            out[:got] = taken
+            out[got:] = array.array("h", [self._last] * (n - got))
+            if not self.ending:
+                self.underrun_samples += n - got
+
+        self.played += n
         return out
 
 
@@ -104,6 +150,7 @@ class PlayoutReport:
     rebuffer_events: int
     done_events: int
     dropped_incoming: int
+    rate_adjusts: int = 0
 
 
 def simulate_ws_playout(
@@ -115,6 +162,7 @@ def simulate_ws_playout(
     jitter_max_s: float = 0.08,
     spike_every: int = 12,
     spike_s: float = 0.12,
+    consume_rate: float = 1.0,
     seed: int = 1,
 ) -> PlayoutReport:
     """按 20ms 帧 → 协议分片 → 带抖动到达 → 128 样本量取数，统计中途欠载。"""
@@ -128,6 +176,7 @@ def simulate_ws_playout(
 
     def enqueue(events, generated_at: float) -> None:
         nonlocal chunk_index
+        saw_done = False
         for event in events:
             if event.kind == "delta":
                 delay = rng.random() * jitter_max_s
@@ -136,7 +185,10 @@ def simulate_ws_playout(
                 arrivals.append((generated_at + delay, event.pcm))
                 chunk_index += 1
             else:
-                arrivals.append((generated_at, None))
+                saw_done = True
+        if saw_done:
+            last_at = max((at for at, _ in arrivals), default=generated_at)
+            arrivals.append((last_at, None))
 
     offset = 0
     while offset < len(pcm):
@@ -151,8 +203,9 @@ def simulate_ws_playout(
 
     now = 0.0
     cursor = 0
-    quantum_s = QUANTUM / SAMPLE_RATE
-    deadline = (arrivals[-1][0] if arrivals else 0.0) + buffer.prefill / buffer.sample_rate + 1.0
+    quantum_s = QUANTUM / (SAMPLE_RATE * consume_rate)
+    deadline = (arrivals[-1][0] if arrivals else 0.0) + buffer.prefill / buffer.sample_rate + 2.0
+    limit = max(deadline + 1.0, generated_s / consume_rate + 8.0)
     while now <= deadline or cursor < len(arrivals) or buffer.available or buffer.playing:
         while cursor < len(arrivals) and arrivals[cursor][0] <= now:
             payload = arrivals[cursor][1]
@@ -163,7 +216,7 @@ def simulate_ws_playout(
             cursor += 1
         buffer.pull(QUANTUM)
         now += quantum_s
-        if now > 45:
+        if now > limit:
             break
 
     return PlayoutReport(
@@ -172,4 +225,5 @@ def simulate_ws_playout(
         rebuffer_events=buffer.rebuffer_events,
         done_events=sum(1 for _, payload in arrivals if payload is None),
         dropped_incoming=buffer.dropped_incoming,
+        rate_adjusts=buffer.rate_adjusts,
     )
