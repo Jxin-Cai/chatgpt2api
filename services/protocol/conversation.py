@@ -802,8 +802,12 @@ def conversation_events(
     image_model = is_supported_image_model(model)
     upstream_model = model
     if not image_model:
-        from services.model_service import model_catalog_service
+        from services.model_service import apply_model_identity_messages, model_catalog_service
 
+        # ChatGPT Web's hidden identity stays on the account default (usually
+        # GPT-5.6 Sol) even when the conversation slug is Luna/Terra/Astra.
+        # Tell the model the public /v1/models name that the client called.
+        normalized = apply_model_identity_messages(normalized, model)
         upstream_model = model_catalog_service.resolve_model(model)
     history_text = "" if image_model else assistant_history_text(normalized)
     history_messages = [] if image_model else assistant_history_messages(normalized)

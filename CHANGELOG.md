@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [修复] 文本对话按客户端调用的 `/v1/models` 名称注入模型身份：`gpt-5.6-luna-wm` 对外自称 `GPT-5.6 Luna` / `gpt-5.6-luna`，不再沿用 ChatGPT Web 默认的 GPT-5.6 Sol。
 - [修复] 文本模型别名改为严格透传：仅桥接语义相同的 Web slug，目标模型不可用时明确报错，不再将 Terra、Luna 或 Sol 的缺失目标静默降级到默认 Sol 模型。
 - [增强] 补齐 `/v1/chat/completions` 函数工具桥接：支持 `tools`、`tool_choice`、`parallel_tool_calls`、标准 `tool_calls` 流式/非流式输出和 `role=tool` 结果续轮；修复 ChatGPT Web 搜索误选内部消息导致空答案，并保留多轮上下文、搜索选项和 URL citations。
 - [增强] 还原 ChatGPT Web 面向用户展示的推理摘要：修正 OpenAI `reasoning_effort` 到 Web `standard` / `extended` 的映射，并通过 `message.reasoning_content` / `delta.reasoning_content` 输出 `reasoning_recap`，覆盖普通文本、函数调用、Web Search 和 Work Mode handoff。

@@ -32,6 +32,13 @@ _DOTTED_MODEL_RE = re.compile(r"^(gpt-\d+)\.(\d+)(.*)$")
 _WEB_MODEL_RE = re.compile(r"^gpt-(\d+)-(\d+)(.*)$")
 _WORK_MODE_MODEL_RE = re.compile(r"^gpt-\d+(?:\.\d+)?-(?:sol|terra|luna|astra)-wm$")
 _CLIENT_WORK_MODE_ALIAS_RE = re.compile(r"^gpt-\d+(?:\.\d+)?-(?:sol|terra|luna|astra)$")
+_WORK_MODE_PUBLIC_RE = re.compile(
+    r"^(gpt-\d+(?:\.\d+)?)(?:-(\d+))?-(sol|terra|luna|astra)(?:-wm)?$",
+    re.IGNORECASE,
+)
+_GENERIC_WORK_MODE_SUFFIX_RE = re.compile(r"^(.+)-wm$", re.IGNORECASE)
+MODEL_IDENTITY_MARKER = "The selected API model for this conversation is"
+_IDENTITY_SKIP_MODELS = frozenset({"", "auto", "default"})
 
 
 def _model_alias_candidates(model: str) -> tuple[str, ...]:
@@ -54,6 +61,78 @@ def _resolve_model_alias(model: str, available_models: set[str]) -> str:
         if candidate in available_models:
             return candidate
     return requested
+
+
+def public_model_name(model: str) -> str:
+    """Return the client-facing name for a called `/v1/models` id.
+
+    Work Mode slugs keep their family name and drop only the ``-wm`` suffix, so
+    ``gpt-5.6-luna-wm`` becomes ``gpt-5.6-luna`` instead of the default Sol
+    product identity.
+    """
+    requested = str(model or "").strip()
+    if not requested:
+        return ""
+    match = _WORK_MODE_PUBLIC_RE.fullmatch(requested)
+    if match:
+        version = match.group(1)
+        if match.group(2):
+            version = f"{version}-{match.group(2)}"
+        return f"{version.lower()}-{match.group(3).lower()}"
+    generic = _GENERIC_WORK_MODE_SUFFIX_RE.fullmatch(requested)
+    if generic:
+        return generic.group(1)
+    return requested
+
+
+def model_product_name(model: str) -> str:
+    """Human product label matching ChatGPT's GPT-5.6 Sol / Luna style."""
+    public = public_model_name(model)
+    match = _WORK_MODE_PUBLIC_RE.fullmatch(public)
+    if not match:
+        return public
+    version = match.group(1)
+    if version.lower().startswith("gpt-"):
+        version = f"GPT-{version[4:]}"
+    if match.group(2) and "." not in version:
+        version = f"{version}.{match.group(2)}"
+    return f"{version} {match.group(3).title()}"
+
+
+def model_identity_label(model: str) -> str:
+    public = public_model_name(model)
+    product = model_product_name(model)
+    if not public:
+        return ""
+    if product.lower() == public.lower():
+        return public
+    return f"{product} ({public})"
+
+
+def model_identity_prompt(model: str) -> str:
+    public = public_model_name(model)
+    if public.lower() in _IDENTITY_SKIP_MODELS:
+        return ""
+    label = model_identity_label(model)
+    return (
+        f"{MODEL_IDENTITY_MARKER} {label}. "
+        "You are ChatGPT running that selected model. "
+        "If asked which model you are, what model you are using, or 你是什么模型, "
+        f"answer that you are currently using {label}. "
+        "Do not claim to be GPT-5.6 Sol or any other model unless that is the selected API model."
+    )
+
+
+def apply_model_identity_messages(messages: list[dict[str, Any]], model: str) -> list[dict[str, Any]]:
+    prompt = model_identity_prompt(model)
+    if not prompt:
+        return messages
+    if any(
+        item.get("role") == "system" and MODEL_IDENTITY_MARKER in str(item.get("content") or "")
+        for item in messages
+    ):
+        return messages
+    return [{"role": "system", "content": prompt}, *messages]
 
 
 def _available_model_aliases(available_models: set[str]) -> dict[str, str]:

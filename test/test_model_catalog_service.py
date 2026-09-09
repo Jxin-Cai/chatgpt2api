@@ -6,7 +6,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from services.account_service import AccountService
-from services.model_service import ModelCatalogService
+from services.model_service import (
+    ModelCatalogService,
+    apply_model_identity_messages,
+    model_identity_prompt,
+    model_product_name,
+    public_model_name,
+)
 from services.storage.json_storage import JSONStorageBackend
 
 
@@ -234,6 +240,40 @@ class ModelCatalogServiceTests(unittest.TestCase):
             self.catalog.route_for_model("gpt-5.6-sol").upstream_model,
             "gpt-5.6-sol-wm",
         )
+
+
+class ModelIdentityTests(unittest.TestCase):
+    def test_work_mode_slug_becomes_public_family_name(self) -> None:
+        self.assertEqual(public_model_name("gpt-5.6-luna-wm"), "gpt-5.6-luna")
+        self.assertEqual(public_model_name("gpt-5.6-luna"), "gpt-5.6-luna")
+        self.assertEqual(public_model_name("gpt-5.6-sol-wm"), "gpt-5.6-sol")
+        self.assertEqual(public_model_name("gpt-6-astra-wm"), "gpt-6-astra")
+        self.assertEqual(model_product_name("gpt-5.6-luna-wm"), "GPT-5.6 Luna")
+        self.assertEqual(model_product_name("gpt-5.6-sol"), "GPT-5.6 Sol")
+
+    def test_luna_identity_does_not_claim_default_sol(self) -> None:
+        prompt = model_identity_prompt("gpt-5.6-luna-wm")
+
+        self.assertIn("GPT-5.6 Luna (gpt-5.6-luna)", prompt)
+        self.assertIn("currently using GPT-5.6 Luna (gpt-5.6-luna)", prompt)
+        self.assertNotIn("currently using GPT-5.6 Sol", prompt)
+
+    def test_identity_messages_are_prepended_once(self) -> None:
+        messages = [{"role": "user", "content": "你是什么模型"}]
+
+        first = apply_model_identity_messages(messages, "gpt-5.6-luna-wm")
+        second = apply_model_identity_messages(first, "gpt-5.6-luna-wm")
+
+        self.assertEqual(len(second), 2)
+        self.assertEqual(second[0]["role"], "system")
+        self.assertIn("gpt-5.6-luna", second[0]["content"])
+        self.assertEqual(second[1], messages[0])
+
+    def test_auto_model_does_not_get_identity_prompt(self) -> None:
+        messages = [{"role": "user", "content": "hello"}]
+
+        self.assertEqual(model_identity_prompt("auto"), "")
+        self.assertEqual(apply_model_identity_messages(messages, "auto"), messages)
 
 
 if __name__ == "__main__":

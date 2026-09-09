@@ -133,6 +133,32 @@ class TextProtocolRoutingTests(unittest.TestCase):
             backend.stream_conversation.call_args.kwargs["model"],
             "gpt-5.6-sol-wm",
         )
+        injected = backend.stream_conversation.call_args.kwargs["messages"]
+        self.assertEqual(injected[0]["role"], "system")
+        self.assertIn("GPT-5.6 Sol (gpt-5.6-sol)", injected[0]["content"])
+
+    def test_conversation_injects_public_name_for_work_mode_slug(self) -> None:
+        backend = mock.Mock()
+        backend.stream_conversation.return_value = iter(())
+        with mock.patch(
+            "services.model_service.model_catalog_service.resolve_model",
+            return_value="gpt-5.6-luna-wm",
+        ):
+            list(conversation.conversation_events(
+                backend,
+                messages=[{"role": "user", "content": "你是什么模型"}],
+                model="gpt-5.6-luna-wm",
+            ))
+
+        injected = backend.stream_conversation.call_args.kwargs["messages"]
+        self.assertEqual(
+            backend.stream_conversation.call_args.kwargs["model"],
+            "gpt-5.6-luna-wm",
+        )
+        self.assertEqual(injected[0]["role"], "system")
+        self.assertIn("GPT-5.6 Luna (gpt-5.6-luna)", injected[0]["content"])
+        self.assertNotIn("currently using GPT-5.6 Sol", injected[0]["content"])
+        self.assertEqual(injected[1]["content"], "你是什么模型")
 
     def test_responses_passes_requested_model_to_text_backend(self) -> None:
         body = {"model": "pro-response", "input": "route response"}
