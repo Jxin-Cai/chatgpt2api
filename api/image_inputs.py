@@ -53,7 +53,11 @@ def _parse_bool(value: object) -> bool | None:
 def _parse_count(value: object) -> int:
     """解析生成数量：保持图片接口的 1 到 4 限制。"""
     try:
-        count = int(value or 1)
+        if value is None or value == "":
+            return 1
+        if isinstance(value, bool) or not re.fullmatch(r"[+-]?\d+", str(value).strip()):
+            raise ValueError("not an integer")
+        count = int(value)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail={"error": "n must be an integer"}) from exc
     if count < 1 or count > 4:

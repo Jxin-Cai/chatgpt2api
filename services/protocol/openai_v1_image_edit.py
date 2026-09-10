@@ -22,30 +22,34 @@ def _composite_mask(
     images: list[tuple[bytes, str, str]],
     masks: list[tuple[bytes, str, str]],
 ) -> list[tuple[bytes, str, str]]:
-    """将 mask 的 alpha 通道合成到图片中，标识需要编辑的区域。
-    
-    mask 的透明区域（低 alpha）= 需要编辑的区域，
-    mask 的不透明区域（高 alpha）= 保留的区域。
-    如果无 mask 则返回原图。
-    """
+    """Apply a single mask to the first image; retain paired-mask extension."""
     if not masks:
         return images
-    result: list[tuple[bytes, str, str]] = []
-    for i, (data, filename, mime_type) in enumerate(images):
-        mask_data = masks[i][0] if i < len(masks) else masks[-1][0]
-        img = Image.open(BytesIO(data)).convert("RGBA")
-        mask_img = Image.open(BytesIO(mask_data))
-        if mask_img.mode == "RGBA":
-            alpha = mask_img.split()[3]
-        elif mask_img.mode == "L":
-            alpha = mask_img
-        else:
-            alpha = mask_img.convert("L")
-        alpha = alpha.resize(img.size, Image.LANCZOS)
-        img.putalpha(alpha)
-        buf = BytesIO()
-        img.save(buf, format="PNG")
-        result.append((buf.getvalue(), filename, "image/png"))
+    if not images:
+        raise ImageGenerationError("image is required", status_code=400)
+    if len(masks) not in {1, len(images)}:
+        raise ImageGenerationError("provide one mask or one mask per image", status_code=400)
+    result = list(images)
+    for i, (mask_data, _mask_filename, _mask_mime) in enumerate(masks):
+        data, filename, _mime_type = images[i]
+        try:
+            with Image.open(BytesIO(data)) as source, Image.open(BytesIO(mask_data)) as mask:
+                if mask.size != source.size:
+                    raise ImageGenerationError("mask must have the same dimensions as image", status_code=400)
+                img = source.convert("RGBA")
+                # Preserve grayscale-mask extension; honor alpha even in palette PNGs.
+                if "A" in mask.getbands() or "transparency" in mask.info:
+                    alpha = mask.convert("RGBA").getchannel("A")
+                elif mask.mode == "L":
+                    alpha = mask.copy()
+                else:
+                    raise ImageGenerationError("mask must have an alpha channel or be grayscale", status_code=400)
+                img.putalpha(alpha)
+                buf = BytesIO()
+                img.save(buf, format="PNG")
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            raise ImageGenerationError("invalid image or mask data", status_code=400) from exc
+        result[i] = (buf.getvalue(), filename.rsplit(".", 1)[0] + ".png", "image/png")
     return result
 
 

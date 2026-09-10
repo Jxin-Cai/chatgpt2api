@@ -4,6 +4,7 @@ import json
 import math
 import struct
 import time
+from fractions import Fraction
 
 import pytest
 from av import AudioFrame, AudioResampler
@@ -29,6 +30,7 @@ from services.realtime.session import (
     RealtimeSession,
     pcm16_rms,
     resample_to_pcm16_mono,
+    silence_to_cover_gap,
 )
 from services.realtime.signaling import RealtimeSignalingGuard
 
@@ -529,10 +531,13 @@ def test_ws_writer_sends_audio_before_transcript_backlog():
     asyncio.run(run())
 
 
-def _loud_stereo_frame(samples: int = 960, value: int = 1200) -> AudioFrame:
+def _loud_stereo_frame(samples: int = 960, value: int = 1200, pts: int | None = None) -> AudioFrame:
     frame = AudioFrame(format="s16", layout="stereo", samples=samples)
     frame.sample_rate = 48000
     frame.planes[0].update(struct.pack("<h", value) * (samples * 2))
+    if pts is not None:
+        frame.pts = pts
+        frame.time_base = Fraction(1, 48000)
     return frame
 
 
@@ -734,18 +739,71 @@ def test_jitter_buffer_resumes_immediately_if_audio_arrives_after_done():
     assert any(sample != 0 for sample in played)
 
 
+def test_silence_to_cover_gap_uses_media_clock_not_wall_stall():
+    assert silence_to_cover_gap(
+        speaking=True,
+        media_now=0.26,
+        last_media=0.04,
+        last_duration=0.02,
+        waited=0.22,
+    ) == pytest.approx(0.20, abs=0.001)
+    assert silence_to_cover_gap(
+        speaking=True,
+        media_now=0.06,
+        last_media=0.04,
+        last_duration=0.02,
+        waited=0.22,
+    ) == 0.0
+    assert silence_to_cover_gap(
+        speaking=False,
+        media_now=0.26,
+        last_media=0.04,
+        last_duration=0.02,
+        waited=0.22,
+    ) == 0.0
+    assert silence_to_cover_gap(
+        speaking=True,
+        media_now=None,
+        last_media=None,
+        last_duration=0.0,
+        waited=0.22,
+    ) == pytest.approx(0.18, abs=0.001)
+
+
+def test_jitter_buffer_plays_at_unity_rate_when_overfilled():
+    buffer = PlaybackJitterBuffer()
+    buffer.push(_sine_pcm(2.0))
+    before = buffer.available
+    for _ in range(200):
+        buffer.pull(128)
+    assert before - buffer.available == 200 * 128
+    assert buffer.rate_adjusts == 0
+
+
+def test_jitter_buffer_drops_oldest_when_full():
+    buffer = PlaybackJitterBuffer(prefill_seconds=0.05, max_prefill_seconds=0.05, max_seconds=0.2)
+    buffer.push(_sine_pcm(0.2, freq=200))
+    buffer.push(_sine_pcm(0.2, freq=1800))
+    assert buffer.available <= buffer.max_samples
+    assert buffer.dropped_incoming > 0
+
+
 def test_audio_sender_fills_dtx_gaps_with_silence():
     class DelayedTrack:
         def __init__(self):
             self.n = 0
+            self.pts = 0
 
         async def recv(self) -> AudioFrame:
             self.n += 1
-            if self.n == 4:
-                await asyncio.sleep(0.22)
             if self.n > 8:
                 raise RuntimeError("ended")
-            return _loud_stereo_frame()
+            if self.n == 4:
+                await asyncio.sleep(0.22)
+                self.pts += int(0.22 * 48_000)
+            frame = _loud_stereo_frame(pts=self.pts)
+            self.pts += 960
+            return frame
 
     async def run():
         session = RealtimeSession(
@@ -770,6 +828,47 @@ def test_audio_sender_fills_dtx_gaps_with_silence():
         pcm = b"".join(deltas)
         assert any(pcm[index:index + 2] == b"\x00\x00" for index in range(0, len(pcm), 2))
         assert sent[-1][0] == "response.audio.done"
+
+    asyncio.run(run())
+
+
+def test_audio_sender_does_not_pad_event_loop_stall_without_pts_jump():
+    class StallingTrack:
+        def __init__(self):
+            self.n = 0
+            self.pts = 0
+
+        async def recv(self) -> AudioFrame:
+            self.n += 1
+            if self.n > 6:
+                raise RuntimeError("ended")
+            if self.n == 4:
+                await asyncio.sleep(0.22)
+            frame = _loud_stereo_frame(pts=self.pts)
+            self.pts += 960
+            return frame
+
+    async def run():
+        session = RealtimeSession(
+            identity={},
+            model="test",
+            websocket=object(),
+            access_token="token",
+        )
+        sent: list[tuple[str, dict]] = []
+
+        async def capture(event_type: str, data: dict) -> None:
+            sent.append((event_type, data))
+
+        session._send_event = capture  # type: ignore[method-assign]
+        session._remote_audio_track = StallingTrack()
+        await session._audio_sender()
+        pcm = b"".join(
+            base64.b64decode(data["delta"])
+            for event_type, data in sent
+            if event_type == "response.audio.delta"
+        )
+        assert not any(pcm[index:index + 2] == b"\x00\x00" for index in range(0, len(pcm), 2))
 
     asyncio.run(run())
 

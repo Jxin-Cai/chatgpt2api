@@ -19,7 +19,7 @@ from utils.log import logger
 
 MAX_INPUT_AUDIO_B64_CHARS = 512_000
 DATA_CHANNEL_QUEUE_SIZE = 512
-AUDIO_OUT_QUEUE_SIZE = 48
+AUDIO_OUT_QUEUE_SIZE = 80
 EVENT_OUT_QUEUE_SIZE = 128
 CHATGPT_WEB_REALTIME_MODEL = "chatgpt-web-voice"
 OUTPUT_CHUNK_SECONDS = 0.04
@@ -28,6 +28,7 @@ SILENCE_RMS_THRESHOLD = 100.0
 END_AUDIO_STATES = frozenset({"listening", "idle"})
 TRANSCRIPT_EVENT = "chat_message_delta"
 GAP_FILL_THRESHOLD_SECONDS = 0.05
+GAP_FILL_FALLBACK_SECONDS = 0.12
 GAP_FILL_MAX_SECONDS = 1.2
 
 
@@ -97,6 +98,39 @@ def resample_to_pcm16_mono(
         if pcm:
             result.append((output_frame, pcm))
     return result
+
+
+def media_time_seconds(frame: AudioFrame) -> float | None:
+    """读取音频帧的媒体时钟；没有 pts 时返回 None。"""
+    pts = getattr(frame, "pts", None)
+    if pts is None:
+        return None
+    time_base = getattr(frame, "time_base", None)
+    if time_base is not None:
+        return float(pts * time_base)
+    rate = getattr(frame, "sample_rate", None) or SAMPLE_RATE
+    return pts / rate
+
+
+def silence_to_cover_gap(
+    *,
+    speaking: bool,
+    media_now: float | None,
+    last_media: float | None,
+    last_duration: float,
+    waited: float,
+) -> float:
+    """只补媒体时间轴上的空洞，避免把事件循环卡顿误补成静音。"""
+    if not speaking:
+        return 0.0
+    if media_now is not None and last_media is not None:
+        extra = media_now - last_media - last_duration
+        if extra > GAP_FILL_MAX_SECONDS + 0.5 or extra < GAP_FILL_THRESHOLD_SECONDS:
+            return 0.0
+        return min(extra, GAP_FILL_MAX_SECONDS)
+    if waited >= GAP_FILL_FALLBACK_SECONDS:
+        return min(max(0.0, waited - 0.04), GAP_FILL_MAX_SECONDS)
+    return 0.0
 
 
 def pcm16_rms(pcm: bytes) -> float:
@@ -230,6 +264,8 @@ class RealtimeSession:
         self._output_assembler = PcmOutputAssembler()
         self._end_audio_output = False
         self._latest_transcript: str | None = None
+        self._last_media_s: float | None = None
+        self._last_frame_s = 0.0
         self._start_time = time.time()
 
     async def run(self) -> None:
@@ -516,6 +552,8 @@ class RealtimeSession:
             if self._end_audio_output:
                 self._end_audio_output = False
                 await emit(assembler.finish())
+                self._last_media_s = None
+                self._last_frame_s = 0.0
             waited_at = time.monotonic()
             try:
                 frame = await asyncio.wait_for(track.recv(), timeout=5)
@@ -526,13 +564,22 @@ class RealtimeSession:
                     logger.warning(f"[realtime] Remote audio track ended: {exc}")
                 break
 
-            # ChatGPT 上行在换气/分句时经常 DTX 停包。这里按等待时长补静音，
-            # 避免客户端播放指针先跑空再整段重预填。
+            # 只按媒体时间轴补 DTX 空洞。事件循环卡住时 pts 不会跳，
+            # 此时再按墙钟补静音会把播放缓冲垫高，客户端听起来越来越快。
             waited = time.monotonic() - waited_at
-            if assembler.speaking and waited >= GAP_FILL_THRESHOLD_SECONDS:
-                pad_s = min(max(0.0, waited - 0.02), GAP_FILL_MAX_SECONDS)
-                if pad_s >= 0.02:
-                    await emit(assembler.push(b"\x00\x00" * int(SAMPLE_RATE * pad_s)))
+            media_now = media_time_seconds(frame)
+            pad_s = silence_to_cover_gap(
+                speaking=assembler.speaking,
+                media_now=media_now,
+                last_media=self._last_media_s,
+                last_duration=self._last_frame_s,
+                waited=waited,
+            )
+            if pad_s >= 0.02:
+                await emit(assembler.push(b"\x00\x00" * int(SAMPLE_RATE * pad_s)))
+            if media_now is not None:
+                self._last_media_s = media_now
+            self._last_frame_s = (frame.samples / frame.sample_rate) if frame.sample_rate else 0.0
 
             recv_count += 1
             for output_frame, pcm_bytes in resample_to_pcm16_mono(resampler, frame):

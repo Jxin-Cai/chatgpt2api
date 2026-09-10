@@ -8,8 +8,8 @@ import {
 
 const SAMPLE_RATE = 48_000;
 const CAPTURE_CHUNK_SAMPLES = 1_920; // 40ms
-const PLAYOUT_LEAD_SECONDS = 0.5;
-const PLAYOUT_MAX_LEAD_SECONDS = 1.0;
+const PLAYOUT_LEAD_SECONDS = 0.6;
+const PLAYOUT_MAX_LEAD_SECONDS = 1.2;
 const CONNECTION_TIMEOUT_MS = 35_000;
 
 class LinearPcmResampler {
@@ -74,10 +74,8 @@ class BufferSourceScheduler {
     if (this.nextAt < this.context.currentTime + 0.02) {
       this.nextAt = this.context.currentTime + 0.02;
     }
-    const lead = this.nextAt - this.context.currentTime;
-    const rate = lead > 0.8 ? 1.004 : lead < 0.26 ? 0.996 : 1;
-    this.start(samples, this.nextAt, rate);
-    this.nextAt += samples.length / this.context.sampleRate / rate;
+    this.start(samples, this.nextAt);
+    this.nextAt += samples.length / this.context.sampleRate;
   }
 
   end(): void {
@@ -94,7 +92,7 @@ class BufferSourceScheduler {
   private flushPending(): void {
     let at = this.context.currentTime + 0.02;
     for (const chunk of this.pending) {
-      this.start(chunk, at, 1);
+      this.start(chunk, at);
       at += chunk.length / this.context.sampleRate;
     }
     this.nextAt = at;
@@ -103,12 +101,11 @@ class BufferSourceScheduler {
     this.buffering = false;
   }
 
-  private start(samples: Float32Array, when: number, rate: number): void {
+  private start(samples: Float32Array, when: number): void {
     const buffer = this.context.createBuffer(1, samples.length, this.context.sampleRate);
     buffer.getChannelData(0).set(samples);
     const source = this.context.createBufferSource();
     source.buffer = buffer;
-    source.playbackRate.value = rate;
     source.connect(this.output);
     source.start(when);
     this.activeSources.add(source);
@@ -418,18 +415,15 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
           constructor(options) {
             super();
             const opts = (options && options.processorOptions) || {};
-            const ring = Math.max(128, opts.ringSamples || 192000);
+            const ring = Math.max(128, opts.ringSamples || 240000);
             this.buffer = new Float32Array(ring);
             this.prefill = Math.max(128, opts.prefillSamples || Math.round(ring * 0.12));
             this.maxPrefill = Math.max(this.prefill, opts.maxPrefillSamples || this.prefill * 2);
-            this.low = Math.max(1, Math.round(this.prefill * 0.62));
-            this.high = Math.max(this.prefill + 1, Math.round(this.prefill * 1.9));
             this.read = 0;
             this.write = 0;
             this.available = 0;
             this.playing = false;
             this.ending = false;
-            this.lastSample = 0;
             this.hunger = 0;
             this.maxHunger = Math.round((sampleRate || 48000) * 1.2 / 128);
             this.port.onmessage = (event) => {
@@ -440,7 +434,6 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
                 this.available = 0;
                 this.playing = false;
                 this.ending = false;
-                this.lastSample = 0;
                 this.hunger = 0;
                 return;
               }
@@ -451,9 +444,14 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
               }
               this.ending = false;
               let samples = data instanceof Float32Array ? data : new Float32Array(data);
-              const space = this.buffer.length - this.available;
-              if (space <= 0) return;
-              if (samples.length > space) samples = samples.subarray(0, space);
+              if (samples.length > this.buffer.length) {
+                samples = samples.subarray(samples.length - this.buffer.length);
+              }
+              const overflow = samples.length - (this.buffer.length - this.available);
+              if (overflow > 0) {
+                this.read = (this.read + overflow) % this.buffer.length;
+                this.available -= overflow;
+              }
               let offset = 0;
               while (offset < samples.length) {
                 const count = Math.min(samples.length - offset, this.buffer.length - this.write);
@@ -483,36 +481,26 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
                 return true;
               }
             }
-            let consume = frames;
-            if (!this.ending) {
-              if (this.available < this.low) consume = Math.max(1, frames - 1);
-              else if (this.available > this.high) consume = frames + 1;
-            }
             if (this.available <= 0) {
+              output.fill(0);
               if (this.ending) {
-                output.fill(0);
                 this.playing = false;
                 this.ending = false;
                 this.hunger = 0;
                 return true;
               }
-              output.fill(this.lastSample);
               this.hunger += 1;
               if (this.hunger >= this.maxHunger) {
                 this.playing = false;
                 this.prefill = Math.min(this.maxPrefill, this.prefill + frames * 8);
-                this.low = Math.max(1, Math.round(this.prefill * 0.62));
-                this.high = Math.max(this.prefill + 1, Math.round(this.prefill * 1.9));
                 this.hunger = 0;
               }
               return true;
             }
             this.hunger = 0;
-            const got = Math.min(consume, this.available);
+            const got = Math.min(frames, this.available);
             for (let i = 0; i < got; i += 1) output[i] = this.readSample();
-            this.lastSample = got > 0 ? output[got - 1] : this.lastSample;
-            if (got < frames) output.fill(this.lastSample, got);
-            else if (consume > frames && this.available > 0) this.readSample();
+            if (got < frames) output.fill(0, got);
             return true;
           }
         }
@@ -536,7 +524,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         numberOfOutputs: 1,
         outputChannelCount: [1],
         processorOptions: {
-          ringSamples: Math.max(context.sampleRate * 4, 192_000),
+          ringSamples: Math.max(context.sampleRate * 5, 240_000),
           prefillSamples: Math.round(context.sampleRate * PLAYOUT_LEAD_SECONDS),
           maxPrefillSamples: Math.round(context.sampleRate * PLAYOUT_MAX_LEAD_SECONDS),
         },

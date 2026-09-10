@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from fastapi import HTTPException
 
@@ -108,8 +108,10 @@ def completion_response(
     prompt_text_tokens = count_message_text_tokens(messages, model) if messages else 0
     prompt_image_tokens = count_message_image_tokens(messages, model) if messages else 0
     prompt_tokens = prompt_text_tokens + prompt_image_tokens
-    completion_text = (raw_completion_text or str(content or "")) + reasoning_content
-    completion_tokens = count_text_tokens(completion_text, model) if messages else 0
+    completion_text = raw_completion_text or str(content or "")
+    text_tokens = count_text_tokens(completion_text, model) if messages else 0
+    reasoning_tokens = count_text_tokens(reasoning_content, model) if messages else 0
+    completion_tokens = text_tokens + reasoning_tokens
     message = {"role": "assistant", "content": content}
     if reasoning_content:
         message["reasoning_content"] = reasoning_content
@@ -137,9 +139,9 @@ def completion_response(
                 "cached_tokens": 0,
             },
             "completion_tokens_details": {
-                "text_tokens": completion_tokens,
+                "text_tokens": text_tokens,
                 "image_tokens": 0,
-                "reasoning_tokens": 0,
+                "reasoning_tokens": reasoning_tokens,
             },
         },
     }
@@ -166,6 +168,35 @@ def stream_text_chat_completion(
     if not sent_role:
         yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
     yield completion_chunk(model, {}, "stop", completion_id, created)
+
+
+def stream_with_usage(
+    chunks: Iterable[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    model: str,
+    usage_factory: Callable[[], dict[str, Any]] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Append estimated usage without buffering or modifying cached chunks."""
+    text_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    last_chunk = None
+    for chunk in chunks:
+        last_chunk = chunk
+        for choice in ([] if usage_factory else chunk.get("choices", [])):
+            delta = choice.get("delta") or {}
+            text_parts.append(str(delta.get("content") or ""))
+            reasoning_parts.append(str(delta.get("reasoning_content") or ""))
+            for call in delta.get("tool_calls") or []:
+                function = call.get("function") or {}
+                text_parts.append(str(function.get("name") or ""))
+                text_parts.append(str(function.get("arguments") or ""))
+        yield {**chunk, "usage": None}
+    if last_chunk is not None:
+        usage = usage_factory() if usage_factory else completion_response(
+            model, "".join(text_parts), messages=messages,
+            reasoning_content="".join(reasoning_parts),
+        )["usage"]
+        yield {**last_chunk, "choices": [], "usage": usage}
 
 
 def collect_chat_content(chunks: Iterable[dict[str, Any]]) -> str:
@@ -409,7 +440,29 @@ def image_chat_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         response_format="b64_json",
         images=encode_images(images) or None,
     ))
-    yield from stream_image_chat_completion(image_outputs, model)
+    options = body.get("stream_options") or {}
+    if not options.get("include_usage"):
+        yield from stream_image_chat_completion(image_outputs, model)
+        return
+    output_tokens = 0
+
+    def tracked_outputs():
+        nonlocal output_tokens
+        for output in image_outputs:
+            if output.kind == "result":
+                output_tokens += count_image_output_items_tokens(output.data)
+            yield output
+
+    def usage():
+        return chat_usage_from_image_usage(image_usage(
+            input_text_tokens=count_text_tokens(prompt, model),
+            input_image_tokens=count_image_inputs_tokens(images, model),
+            output_tokens=output_tokens,
+        ))
+
+    yield from stream_with_usage(
+        stream_image_chat_completion(tracked_outputs(), model), [], model, usage_factory=usage,
+    )
 
 
 def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: str) -> Iterator[dict[str, Any]]:
@@ -438,11 +491,14 @@ def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: st
     yield completion_chunk(model, {}, "stop", completion_id, created)
 
 
-def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
+def _handle(
+    body: dict[str, Any],
+    prepared_text: tuple[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any] | Iterator[dict[str, Any]]:
     if body.get("stream"):
         if is_image_chat_request(body):
             return image_chat_events(body)
-        model, messages = text_chat_parts(body)
+        model, messages = prepared_text if prepared_text is not None else text_chat_parts(body)
         if is_web_search_chat_request(body) and has_function_tools(body):
             raise HTTPException(
                 status_code=400,
@@ -499,3 +555,17 @@ def text_chat_response(
         messages=messages,
         reasoning_content=output.reasoning_content,
     )
+
+
+def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
+    options = body.get("stream_options")
+    if options is not None and (
+        not isinstance(options, dict)
+        or ("include_usage" in options and not isinstance(options["include_usage"], bool))
+    ):
+        raise HTTPException(status_code=400, detail={"error": "stream_options.include_usage must be a boolean"})
+    if body.get("stream") and options and options.get("include_usage") and not is_image_chat_request(body):
+        model, messages = text_chat_parts(body)
+        result = _handle(body, prepared_text=(model, messages))
+        return stream_with_usage(result, messages, model)
+    return _handle(body)

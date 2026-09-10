@@ -11,14 +11,14 @@ from services.realtime.session import PcmOutputAssembler
 QUANTUM = 128
 DEFAULT_PREFILL_SECONDS = 0.42
 DEFAULT_MAX_PREFILL_SECONDS = 0.84
-DEFAULT_MAX_SECONDS = 3.6
+DEFAULT_MAX_SECONDS = 4.0
 
 
 class PlaybackJitterBuffer:
     """客户端播放抖动缓冲的参考实现。
 
-    未凑够预填时只出静音；开播后按目标水位微调取数速度。短缺口保持
-    开播并重复末样，避免整段重预填把一句话切成卡顿。
+    未凑够预填时只出静音；开播后严格按 1.0x 取数。短缺口保持开播并出
+    静音，水位过高时丢掉最旧样本，而不是加快语速。
     """
 
     def __init__(
@@ -40,14 +40,8 @@ class PlaybackJitterBuffer:
         self.rebuffer_events = 0
         self.dropped_incoming = 0
         self.rate_adjusts = 0
-        self._last = 0
         self._hunger = 0
         self._hunger_limit = int(sample_rate * 1.2)
-        self._retarget()
-
-    def _retarget(self) -> None:
-        self.low = max(1, int(self.prefill * 0.62))
-        self.high = min(self.max_samples - 1, max(self.prefill + 1, int(self.prefill * 1.9)))
 
     @property
     def available(self) -> int:
@@ -61,13 +55,14 @@ class PlaybackJitterBuffer:
         incoming.frombytes(pcm[:length])
         if sys.byteorder != "little":
             incoming.byteswap()
-        room = self.max_samples - len(self._samples)
-        if room <= 0:
-            self.dropped_incoming += len(incoming)
-            return
-        if len(incoming) > room:
-            self.dropped_incoming += len(incoming) - room
-            incoming = incoming[:room]
+        overflow = len(self._samples) + len(incoming) - self.max_samples
+        if overflow > 0:
+            self.dropped_incoming += overflow
+            if overflow >= len(self._samples):
+                incoming = incoming[overflow - len(self._samples):]
+                self._samples = array.array("h")
+            else:
+                del self._samples[:overflow]
         self._samples.extend(incoming)
         if self.ending:
             self.ending = False
@@ -86,7 +81,6 @@ class PlaybackJitterBuffer:
         self.playing = False
         self.ending = False
         self._hunger = 0
-        self._last = 0
 
     def pull(self, n: int) -> array.array:
         out = array.array("h", [0] * n)
@@ -96,48 +90,29 @@ class PlaybackJitterBuffer:
             else:
                 return out
 
-        consume = n
-        if not self.ending:
-            if len(self._samples) < self.low:
-                consume = max(1, n - 1)
-                self.rate_adjusts += 1
-            elif len(self._samples) > self.high:
-                consume = n + 1
-                self.rate_adjusts += 1
-
-        got = min(consume, len(self._samples))
-        taken = self._samples[:got]
+        got = min(n, len(self._samples))
         if got:
+            out[:got] = self._samples[:got]
             del self._samples[:got]
             self._hunger = 0
-            self._last = int(taken[-1])
 
         if got == 0:
             if self.ending:
                 self.playing = False
                 self.ending = False
                 return out
-            out[:] = array.array("h", [self._last] * n)
             self.underrun_samples += n
             self._hunger += n
             if self._hunger >= self._hunger_limit:
                 self.playing = False
                 self.prefill = min(self.max_prefill, self.prefill + n * 8)
-                self._retarget()
                 self._hunger = 0
                 self.rebuffer_events += 1
             self.played += n
             return out
 
-        if got >= n:
-            out[:] = taken[:n]
-            if got > n:
-                self._last = int(taken[n - 1])
-        else:
-            out[:got] = taken
-            out[got:] = array.array("h", [self._last] * (n - got))
-            if not self.ending:
-                self.underrun_samples += n - got
+        if got < n and not self.ending:
+            self.underrun_samples += n - got
 
         self.played += n
         return out

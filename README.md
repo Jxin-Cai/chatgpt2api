@@ -278,6 +278,7 @@ curl http://localhost:8000/v1/images/edits \
 | `image`     | 需要编辑的图片文件，使用 multipart/form-data 上传           |
 | `images`    | JSON 图片引用数组，支持 `{"image_url": "https://..."}` |
 | `image_url` | 表单模式下也可直接传图片链接，支持重复字段传多张图                     |
+| `mask` | 单个 mask 仅应用到第一张图片，尺寸必须与对应图片相同；透明区域表示编辑区域。保留灰度 mask、逐图配对 mask 扩展 |
 
 <br>
 </details>
@@ -288,6 +289,8 @@ curl http://localhost:8000/v1/images/edits \
 <br>
 
 面向文本、函数工具、网页搜索与图片场景的 Chat Completions 兼容接口。
+
+流式请求可设置 `"stream_options": {"include_usage": true}`。普通 chunk 的 `usage` 为 `null`，结束 chunk 后、`[DONE]` 前追加 `choices: []` 的 usage chunk；文本、工具、搜索与图片分支均支持。中断或失败时不追加成功 usage。所有 token 用量均为本地估算，`reasoning_tokens` 只估算已返回的 reasoning recap，不代表上游隐藏推理或实际计费；图片分支按图片 token 估算，不把 Base64 当作文本计数。
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
