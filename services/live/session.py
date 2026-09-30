@@ -24,6 +24,7 @@ class LiveSession(RealtimeSession):
         self._clock: float | None = None
         self._stop = asyncio.Event()
         self._prepared = False
+        self._media_task: asyncio.Task | None = None
         self._muted = False
         self._reason = "connection_lost"
         self._close_event_id: str | None = None
@@ -45,6 +46,11 @@ class LiveSession(RealtimeSession):
         if self._prepared:
             return
         await asyncio.wait_for(self._start(), timeout=45)
+        if self.config.transport == "webrtc":
+            # Drain upstream RTP while the browser completes ICE/DTLS. Otherwise
+            # seconds of decoded startup frames burst into the small output queue.
+            self._media_task = asyncio.create_task(self._audio_sender(), name="live-audio")
+            self._tasks.append(self._media_task)
         self._prepared = True
 
     async def serve(self, start_event_id: str | None = None) -> None:
@@ -69,7 +75,7 @@ class LiveSession(RealtimeSession):
             self._tasks = [
                 asyncio.create_task(self._ws_writer(), name="live-writer"),
                 asyncio.create_task(self._client_reader(), name="live-reader"),
-                asyncio.create_task(self._audio_sender(), name="live-audio"),
+                self._media_task or asyncio.create_task(self._audio_sender(), name="live-audio"),
                 asyncio.create_task(self._dc_reader(), name="live-events"),
                 asyncio.create_task(self._stop.wait(), name="live-stop"),
                 asyncio.create_task(asyncio.sleep(SESSION_SECONDS), name="live-expiry"),
