@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from typing import Any
 from services.account_service import AccountService, account_service
 from services.openai_backend_api import OpenAIBackendAPI
 from utils.log import logger
+from utils.text_models import CHAT_TEXT_MODELS, DEFAULT_TEXT_MODEL, SUPPORTED_TEXT_MODELS
 
 
 @dataclass(frozen=True)
@@ -18,141 +20,76 @@ class ModelRoute:
     account_types: frozenset[str]
     allow_anonymous: bool = False
     upstream_model: str = ""
+    # Fingerprints, never bearer tokens. None preserves callers supplying a
+    # plan-only route; catalog routes always constrain individual accounts.
+    account_keys: frozenset[str] | None = None
 
 
 class ModelUnavailableError(RuntimeError):
-    pass
+    status_code = 404
+
+    def to_openai_error(self) -> dict[str, Any]:
+        return {"error": {
+            "message": str(self), "type": "invalid_request_error",
+            "param": "model", "code": "model_not_found",
+        }}
 
 
-# Codex clients expose dotted product-facing names while ChatGPT Web may use
-# hyphenated slugs and a ``-wm`` suffix. Only syntax-equivalent aliases are
-# allowed: substituting a different model would silently run the request on the
-# wrong model (usually the account's default Sol model).
+def model_account_key(access_token: str) -> str:
+    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+
+
 _DOTTED_MODEL_RE = re.compile(r"^(gpt-\d+)\.(\d+)(.*)$")
 _WEB_MODEL_RE = re.compile(r"^gpt-(\d+)-(\d+)(.*)$")
-_WORK_MODE_MODEL_RE = re.compile(r"^gpt-\d+(?:\.\d+)?-(?:sol|terra|luna|astra)-wm$")
-_CLIENT_WORK_MODE_ALIAS_RE = re.compile(r"^gpt-\d+(?:\.\d+)?-(?:sol|terra|luna|astra)$")
-_WORK_MODE_PUBLIC_RE = re.compile(
-    r"^(gpt-\d+(?:\.\d+)?)(?:-(\d+))?-(sol|terra|luna|astra)(?:-wm)?$",
-    re.IGNORECASE,
-)
-_GENERIC_WORK_MODE_SUFFIX_RE = re.compile(r"^(.+)-wm$", re.IGNORECASE)
-MODEL_IDENTITY_MARKER = "The selected API model for this conversation is"
-_IDENTITY_SKIP_MODELS = frozenset({"", "auto", "default"})
+_WORK_MODE_MODEL_RE = re.compile(r"^gpt-\d+(?:[.-]\d+)?-(?:sol|terra|luna|astra)$")
+
+
+def canonical_text_model(model: str) -> str:
+    value = str(model or "").strip().lower().removesuffix("-wm")
+    if match := _WEB_MODEL_RE.fullmatch(value):
+        value = f"gpt-{match[1]}.{match[2]}{match[3]}"
+    return value
+
+
+def require_supported_text_model(model: object = None) -> str:
+    value = canonical_text_model(str(model or DEFAULT_TEXT_MODEL))
+    if value not in SUPPORTED_TEXT_MODELS or (
+        value in CHAT_TEXT_MODELS and str(model or "").strip().lower().endswith("-wm")
+    ):
+        raise ModelUnavailableError(f"model {model!r} is not supported; select a model from /v1/models")
+    return value
 
 
 def _model_alias_candidates(model: str) -> tuple[str, ...]:
+    """Compose spelling aliases without guessing a different model family."""
     normalized = str(model or "").strip().lower()
-    candidates = []
-    if _CLIENT_WORK_MODE_ALIAS_RE.fullmatch(normalized):
-        candidates.append(f"{normalized}-wm")
-    dotted = _DOTTED_MODEL_RE.fullmatch(normalized)
-    if dotted:
-        candidates.append(f"{dotted.group(1)}-{dotted.group(2)}{dotted.group(3)}")
-    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate != normalized))
+    spellings = [normalized]
+    if match := _DOTTED_MODEL_RE.fullmatch(normalized):
+        spellings.append(f"{match[1]}-{match[2]}{match[3]}")
+    elif match := _WEB_MODEL_RE.fullmatch(normalized):
+        spellings.append(f"gpt-{match[1]}.{match[2]}{match[3]}")
+    candidates = list(spellings)
+    for spelling in spellings:
+        base = spelling.removesuffix("-wm")
+        if _WORK_MODE_MODEL_RE.fullmatch(base):
+            candidates.append(base if spelling.endswith("-wm") else f"{base}-wm")
+    return tuple(dict.fromkeys(value for value in candidates if value != normalized))
 
 
 def _resolve_model_alias(model: str, available_models: set[str]) -> str:
-    requested = str(model or "").strip() or "auto"
-    normalized = requested.lower()
-    if normalized in available_models:
-        return normalized
-    for candidate in _model_alias_candidates(normalized):
+    public_model = require_supported_text_model(model)
+    work_mode = public_model not in CHAT_TEXT_MODELS
+    requested = f"{public_model}-wm" if work_mode else public_model
+    for candidate in (requested, *_model_alias_candidates(requested)):
+        if candidate.endswith("-wm") != work_mode:
+            continue
         if candidate in available_models:
             return candidate
     return requested
 
 
-def public_model_name(model: str) -> str:
-    """Return the client-facing name for a called `/v1/models` id.
-
-    Work Mode slugs keep their family name and drop only the ``-wm`` suffix, so
-    ``gpt-5.6-luna-wm`` becomes ``gpt-5.6-luna`` instead of the default Sol
-    product identity.
-    """
-    requested = str(model or "").strip()
-    if not requested:
-        return ""
-    match = _WORK_MODE_PUBLIC_RE.fullmatch(requested)
-    if match:
-        version = match.group(1)
-        if match.group(2):
-            version = f"{version}-{match.group(2)}"
-        return f"{version.lower()}-{match.group(3).lower()}"
-    generic = _GENERIC_WORK_MODE_SUFFIX_RE.fullmatch(requested)
-    if generic:
-        return generic.group(1)
-    return requested
-
-
-def model_product_name(model: str) -> str:
-    """Human product label matching ChatGPT's GPT-5.6 Sol / Luna style."""
-    public = public_model_name(model)
-    match = _WORK_MODE_PUBLIC_RE.fullmatch(public)
-    if not match:
-        return public
-    version = match.group(1)
-    if version.lower().startswith("gpt-"):
-        version = f"GPT-{version[4:]}"
-    if match.group(2) and "." not in version:
-        version = f"{version}.{match.group(2)}"
-    return f"{version} {match.group(3).title()}"
-
-
-def model_identity_label(model: str) -> str:
-    public = public_model_name(model)
-    product = model_product_name(model)
-    if not public:
-        return ""
-    if product.lower() == public.lower():
-        return public
-    return f"{product} ({public})"
-
-
-def model_identity_prompt(model: str) -> str:
-    public = public_model_name(model)
-    if public.lower() in _IDENTITY_SKIP_MODELS:
-        return ""
-    label = model_identity_label(model)
-    return (
-        f"{MODEL_IDENTITY_MARKER} {label}. "
-        "You are ChatGPT running that selected model. "
-        "If asked which model you are, what model you are using, or 你是什么模型, "
-        f"answer that you are currently using {label}. "
-        "Do not claim to be GPT-5.6 Sol or any other model unless that is the selected API model."
-    )
-
-
-def apply_model_identity_messages(messages: list[dict[str, Any]], model: str) -> list[dict[str, Any]]:
-    prompt = model_identity_prompt(model)
-    if not prompt:
-        return messages
-    if any(
-        item.get("role") == "system" and MODEL_IDENTITY_MARKER in str(item.get("content") or "")
-        for item in messages
-    ):
-        return messages
-    return [{"role": "system", "content": prompt}, *messages]
-
-
-def _available_model_aliases(available_models: set[str]) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for upstream_model in sorted(available_models):
-        if _WORK_MODE_MODEL_RE.fullmatch(upstream_model):
-            work_mode_alias = upstream_model[:-3]
-            if work_mode_alias not in available_models:
-                aliases[work_mode_alias] = upstream_model
-        match = _WEB_MODEL_RE.fullmatch(upstream_model)
-        if not match:
-            continue
-        alias = f"gpt-{match.group(1)}.{match.group(2)}{match.group(3)}"
-        if alias not in available_models:
-            aliases[alias] = upstream_model
-    return aliases
-
-
 class ModelCatalogService:
-    """Caches the model catalogs advertised to each active account type."""
+    """Cache each account's Web catalog; plans do not guarantee model access."""
 
     def __init__(
         self,
@@ -168,9 +105,10 @@ class ModelCatalogService:
         self._clock = clock
         self._lock = RLock()
         self._expires_at = 0.0
-        self._account_signature: tuple[tuple[str, int], ...] = ()
-        self._anonymous_models: dict[str, dict[str, Any]] = {}
-        self._models_by_account_type: dict[str, dict[str, dict[str, Any]]] = {}
+        self._account_signature: tuple[tuple[str, str], ...] = ()
+        self._models_by_account: dict[str, dict[str, dict[str, Any]]] = {}
+        self._account_types: dict[str, str] = {}
+        self._last_success: dict[str, float] = {}
 
     @staticmethod
     def _model_map(result: object) -> dict[str, dict[str, Any]]:
@@ -178,175 +116,140 @@ class ModelCatalogService:
             raise TypeError("upstream model response has no data list")
         models: dict[str, dict[str, Any]] = {}
         for item in result["data"]:
-            if not isinstance(item, dict):
-                continue
-            model_id = str(item.get("id") or "").strip()
-            if model_id and model_id not in models:
-                models[model_id] = dict(item)
+            if isinstance(item, dict) and (model_id := str(item.get("id") or "").strip()):
+                public_model = canonical_text_model(model_id)
+                work_mode = public_model not in CHAT_TEXT_MODELS
+                if (
+                    public_model in SUPPORTED_TEXT_MODELS
+                    and model_id.endswith("-wm") == work_mode
+                    and ("is_work_mode_model" not in item or item["is_work_mode_model"] == work_mode)
+                ):
+                    models.setdefault(model_id, dict(item))
         return models
 
-    def _active_accounts_by_type(self) -> dict[str, list[str]]:
-        groups: dict[str, list[str]] = {}
+    def _active_accounts(self) -> dict[str, tuple[str, str]]:
+        accounts = {}
         for account in self._accounts.list_accounts():
             if not isinstance(account, dict) or account.get("status") in {"禁用", "异常"}:
                 continue
-            access_token = str(account.get("access_token") or "").strip()
-            account_type = self._accounts._normalize_account_type(account.get("type"))
-            if access_token and account_type:
-                groups.setdefault(account_type, []).append(access_token)
-        return groups
+            token = str(account.get("access_token") or "").strip()
+            kind = self._accounts._normalize_account_type(account.get("type"))
+            if token and kind:
+                accounts[model_account_key(token)] = (kind, token)
+        return accounts
 
     @staticmethod
-    def _signature(groups: dict[str, list[str]]) -> tuple[tuple[str, int], ...]:
-        return tuple(
-            (account_type, len(tokens))
-            for account_type, tokens in sorted(groups.items())
-        )
+    def _signature(accounts: dict[str, tuple[str, str]]) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted((key, kind) for key, (kind, _token) in accounts.items()))
 
-    def _fetch_models(self, access_token: str = "") -> dict[str, dict[str, Any]]:
+    def _fetch_models(self, access_token: str) -> dict[str, dict[str, Any]]:
         backend = self._backend_factory(access_token=access_token)
         try:
             return self._model_map(backend.list_models())
         finally:
             backend.close()
 
-    def _fetch_account_type_models(
-        self,
-        account_type: str,
-        access_tokens: list[str],
-    ) -> dict[str, dict[str, Any]] | None:
-        attempted_tokens: set[str] = set()
-        last_error: Exception | None = None
-        unauthorized_seen = False
-        for access_token in access_tokens:
-            resolved_token = access_token
+    def _fetch_account_models(self, token: str) -> tuple[str, dict[str, dict[str, Any]] | None]:
+        resolved = token
+        try:
+            resolved = self._accounts.refresh_access_token(token, event="list_models") or token
             try:
-                resolved_token = self._accounts.refresh_access_token(
-                    access_token,
-                    event="list_models",
-                ) or access_token
-                if resolved_token in attempted_tokens:
-                    continue
-                attempted_tokens.add(resolved_token)
-                return self._fetch_models(resolved_token)
-            except Exception as exc:  # noqa: BLE001 - try the next account for any upstream failure
-                if getattr(exc, "status_code", None) == 401:
-                    refreshed_token = self._accounts.refresh_access_token(
-                        resolved_token,
-                        force=True,
-                        event="list_models:unauthorized",
-                    ) or resolved_token
-                    if refreshed_token not in attempted_tokens:
-                        attempted_tokens.add(refreshed_token)
-                        try:
-                            return self._fetch_models(refreshed_token)
-                        except Exception as retry_exc:  # noqa: BLE001 - try the next account
-                            exc = retry_exc
-                    unauthorized_seen = getattr(exc, "status_code", None) == 401
-                last_error = exc
-        if last_error is not None:
-            logger.warning({
-                "event": "model_catalog_account_type_failed",
-                "account_type": account_type,
-                "error_type": type(last_error).__name__,
-            })
-        if unauthorized_seen:
-            return {}
-        return None
+                return resolved, self._fetch_models(resolved)
+            except Exception as exc:
+                if getattr(exc, "status_code", None) != 401:
+                    raise
+                refreshed = self._accounts.refresh_access_token(
+                    resolved, force=True, event="list_models:unauthorized",
+                ) or resolved
+                if refreshed == resolved:
+                    raise
+                resolved = refreshed
+                return resolved, self._fetch_models(resolved)
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            logger.warning({"event": "model_catalog_account_failed", "error_type": type(exc).__name__})
+            # Authorization failures revoke old capabilities immediately.
+            return resolved, {} if status in {401, 403} else None
 
-    def _refresh(self, groups: dict[str, list[str]], signature: tuple[tuple[str, int], ...]) -> None:
-        models_by_account_type: dict[str, dict[str, dict[str, Any]]] = {}
-        with ThreadPoolExecutor(max_workers=max(1, min(4, len(groups)))) as executor:
-            account_futures = {
-                account_type: executor.submit(
-                    self._fetch_account_type_models,
-                    account_type,
-                    access_tokens,
-                )
-                for account_type, access_tokens in groups.items()
+    def _refresh(self, accounts: dict[str, tuple[str, str]]) -> None:
+        models_by_account = {}
+        account_types = {}
+        last_success = {}
+        with ThreadPoolExecutor(max_workers=max(1, min(4, len(accounts)))) as executor:
+            futures = {
+                key: executor.submit(self._fetch_account_models, token)
+                for key, (_kind, token) in accounts.items()
             }
-            for account_type, future in account_futures.items():
-                models = future.result()
+            for old_key, future in futures.items():
+                token, models = future.result()
+                key = model_account_key(token)
+                kind = accounts[old_key][0]
                 if models is not None:
-                    models_by_account_type[account_type] = models
-                elif account_type in self._models_by_account_type:
-                    models_by_account_type[account_type] = self._models_by_account_type[account_type]
-
-        # The anonymous models endpoint may enumerate models even when the
-        # anonymous conversation endpoint is blocked.  It is therefore not a
-        # reliable source for an API that promises callable models.
-        self._anonymous_models = {}
-        self._models_by_account_type = models_by_account_type
-        self._account_signature = signature
+                    models_by_account[key] = models
+                    last_success[key] = self._clock()
+                elif (
+                    key == old_key and key in self._models_by_account
+                    and self._clock() - self._last_success.get(key, 0) < 3 * self._cache_ttl_seconds
+                ):
+                    # Brief outages may use a bounded stale catalog, only for
+                    # the same credential. Never inherit another account's access.
+                    models_by_account[key] = self._models_by_account[key]
+                    last_success[key] = self._last_success[key]
+                account_types[key] = kind
+        self._models_by_account = models_by_account
+        self._account_types = account_types
+        self._last_success = last_success
+        # Refresh may rotate credentials; record the resulting pool signature.
+        self._account_signature = tuple(sorted(account_types.items()))
         self._expires_at = self._clock() + self._cache_ttl_seconds
 
     def _ensure_catalog(self) -> None:
-        groups = self._active_accounts_by_type()
-        signature = self._signature(groups)
         with self._lock:
-            if signature == self._account_signature and self._clock() < self._expires_at:
+            accounts = self._active_accounts()
+            if self._signature(accounts) == self._account_signature and self._clock() < self._expires_at:
                 return
-            self._refresh(groups, signature)
+            self._refresh(accounts)
+
+    def _available_models(self) -> set[str]:
+        return {model for models in self._models_by_account.values() for model in models}
 
     def list_models(self) -> dict[str, Any]:
         self._ensure_catalog()
         with self._lock:
-            union: dict[str, dict[str, Any]] = {
-                model_id: dict(item)
-                for model_id, item in self._anonymous_models.items()
-            }
-            for account_type in sorted(self._models_by_account_type):
-                for model_id, item in self._models_by_account_type[account_type].items():
+            union: dict[str, dict[str, Any]] = {}
+            for key in sorted(self._models_by_account):
+                for model_id, item in self._models_by_account[key].items():
                     union.setdefault(model_id, dict(item))
-            aliases = _available_model_aliases(set(union))
-            for alias, upstream_model in aliases.items():
-                item = dict(union[upstream_model])
-                item.update({
-                    "id": alias,
-                    "root": upstream_model,
-                    "parent": None,
-                })
-                union[alias] = item
-        return {
-            "object": "list",
-            "data": [union[model_id] for model_id in sorted(union)],
-        }
+            data = []
+            for model in SUPPORTED_TEXT_MODELS:
+                upstream_model = _resolve_model_alias(model, set(union))
+                if upstream_model in union:
+                    data.append({**union[upstream_model], "id": model, "root": upstream_model, "parent": None})
+        return {"object": "list", "data": data}
 
     def resolve_model(self, model: str) -> str:
-        """Resolve a public compatibility name to a live ChatGPT Web slug."""
+        model = require_supported_text_model(model)
         self._ensure_catalog()
         with self._lock:
-            available_models = set(self._anonymous_models)
-            for models in self._models_by_account_type.values():
-                available_models.update(models)
-            return _resolve_model_alias(model, available_models)
+            available_models = self._available_models()
+            upstream_model = _resolve_model_alias(model, available_models)
+            if upstream_model not in available_models:
+                raise ModelUnavailableError(f"no active account advertises the required Chat/Work target for {model!r}")
+            return upstream_model
 
     def route_for_model(self, model: str) -> ModelRoute:
+        model = require_supported_text_model(model)
         self._ensure_catalog()
         with self._lock:
-            available_models = set(self._anonymous_models)
-            for models in self._models_by_account_type.values():
-                available_models.update(models)
-            upstream_model = _resolve_model_alias(model, available_models)
-            if upstream_model.lower() == "auto":
-                return ModelRoute(
-                    account_types=frozenset(
-                        account_type
-                        for account_type, models in self._models_by_account_type.items()
-                        if models
-                    ),
-                    allow_anonymous=bool(self._anonymous_models),
-                    upstream_model="auto",
-                )
-            account_types = frozenset(
-                account_type
-                for account_type, models in self._models_by_account_type.items()
+            upstream_model = _resolve_model_alias(model, self._available_models())
+            keys = frozenset(
+                key for key, models in self._models_by_account.items()
                 if upstream_model in models
             )
             return ModelRoute(
-                account_types=account_types,
-                allow_anonymous=upstream_model in self._anonymous_models,
+                account_types=frozenset(self._account_types[key] for key in keys),
                 upstream_model=upstream_model,
+                account_keys=keys,
             )
 
 

@@ -17,6 +17,7 @@ import {
 } from "@/lib/realtime-webrtc";
 import { RealtimeWebSocketConnection } from "@/lib/realtime-websocket";
 import {
+  LiveTranscriptGrouper,
   chatTranscriptUpdateFromEvent,
   transcriptUpdateFromEvent,
   type ChatTranscriptCursor,
@@ -43,17 +44,17 @@ type LivePhase = "offline" | "connecting" | "listening" | "thinking" | "speaking
 
 type VoiceOption = { value: string; label: string; preview: string };
 
-// /v1/realtime/voices 不可达时的内置回退列表。
+// 对外使用官方声音名；当前适配器的实际音色映射见 Live 使用文档。
 const FALLBACK_VOICES: VoiceOption[] = [
-  { value: "ember", label: "Ember · 自信乐观", preview: "/audio/voice-previews/ember.m4a" },
-  { value: "glimmer", label: "Sol · 聪慧随性", preview: "/audio/voice-previews/glimmer.m4a" },
-  { value: "breeze", label: "Breeze · 活泼认真", preview: "/audio/voice-previews/breeze.m4a" },
-  { value: "cove", label: "Cove · 沉稳直率", preview: "/audio/voice-previews/cove.m4a" },
-  { value: "juniper", label: "Juniper · 开放豁达", preview: "/audio/voice-previews/juniper.m4a" },
-  { value: "maple", label: "Maple · 开朗直率", preview: "/audio/voice-previews/maple.m4a" },
-  { value: "orbit", label: "Spruce · 冷静坚定", preview: "/audio/voice-previews/orbit.m4a" },
-  { value: "vale", label: "Vale · 聪颖好奇", preview: "/audio/voice-previews/vale.m4a" },
-  { value: "fathom", label: "Arbor · 随和多才", preview: "/audio/voice-previews/fathom.m4a" },
+  { value: "marin", label: "Ember · 自信乐观", preview: "/audio/voice-previews/ember.m4a" },
+  { value: "shimmer", label: "Sol · 聪慧随性", preview: "/audio/voice-previews/glimmer.m4a" },
+  { value: "alloy", label: "Breeze · 活泼认真", preview: "/audio/voice-previews/breeze.m4a" },
+  { value: "ash", label: "Cove · 沉稳直率", preview: "/audio/voice-previews/cove.m4a" },
+  { value: "coral", label: "Juniper · 开放豁达", preview: "/audio/voice-previews/juniper.m4a" },
+  { value: "ballad", label: "Maple · 开朗直率", preview: "/audio/voice-previews/maple.m4a" },
+  { value: "echo", label: "Spruce · 冷静坚定", preview: "/audio/voice-previews/orbit.m4a" },
+  { value: "sage", label: "Vale · 聪颖好奇", preview: "/audio/voice-previews/vale.m4a" },
+  { value: "cedar", label: "Arbor · 随和多才", preview: "/audio/voice-previews/fathom.m4a" },
 ];
 
 const MAX_QUOTA_RETRIES = 2;
@@ -128,7 +129,7 @@ function quotaRecoveryFromEvent(data: RealtimeEvent): {
 }
 
 export function RealtimePanel() {
-  const [voice, setVoice] = useState("ember");
+  const [voice, setVoice] = useState("marin");
   const [voices, setVoices] = useState<VoiceOption[]>(FALLBACK_VOICES);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -142,6 +143,10 @@ export function RealtimePanel() {
   const [quality, setQuality] = useState<RealtimeConnectionQuality | null>(null);
 
   const realtimeRef = useRef<RealtimeConnection | null>(null);
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
+  const liveTranscriptRef = useRef(new LiveTranscriptGrouper());
+  const desiredMicRef = useRef(true);
+  useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
   const audioContextRef = useRef<AudioContext | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const remoteAnalyserRef = useRef<AnalyserNode | null>(null);
@@ -247,22 +252,16 @@ export function RealtimePanel() {
       const session = await getStoredAuthSession();
       if (!session || cancelled) return;
       try {
-        const response = await fetch(realtimeEndpoint(webConfig.apiUrl || "", "/v1/realtime/voices"), {
+        const response = await fetch(realtimeEndpoint(webConfig.apiUrl || "", "/v1/live/capabilities"), {
           headers: { Authorization: `Bearer ${session.key}` },
         });
         if (!response.ok) return;
-        const payload = (await response.json()) as {
-          data?: Array<{ id?: string; name?: string; description?: string; preview_url?: string }>;
-        };
-        const items: VoiceOption[] = (payload.data || [])
-          .filter((item): item is { id: string; name?: string; description?: string; preview_url?: string } =>
-            typeof item.id === "string" && item.id.length > 0)
-          .map((item) => ({
-            value: item.id,
-            label: [item.name, item.description].filter(Boolean).join(" · ") || item.id,
-            // 试听音频与页面同源，因此保留相对路径。
-            preview: item.preview_url || `/audio/voice-previews/${item.id}.m4a`,
-          }));
+        const payload = await response.json() as { voices?: Record<string, string> };
+        const items: VoiceOption[] = Object.entries(payload.voices || {}).map(([name, upstream]) => ({
+          value: name,
+          label: name.charAt(0).toUpperCase() + name.slice(1),
+          preview: `/audio/voice-previews/${upstream}.m4a`,
+        }));
         if (!cancelled && items.length > 0) setVoices(items);
       } catch {
         // 拉取失败时继续使用内置回退列表。
@@ -301,7 +300,7 @@ export function RealtimePanel() {
         for (const pending of updates) {
           let sourceId = pending.sourceId || activeTurnRef.current[pending.role];
           let index = sourceId ? next.findIndex((entry) => entry.sourceId === sourceId) : -1;
-          if (index < 0) {
+          if (index < 0 && !pending.sourceId) {
             for (let candidate = next.length - 1; candidate >= 0; candidate -= 1) {
               if (next[candidate].role === pending.role && !next[candidate].final) {
                 index = candidate;
@@ -313,7 +312,7 @@ export function RealtimePanel() {
             sourceId = sourceId || `${pending.role}-${++transcriptTurnRef.current}`;
             activeTurnRef.current[pending.role] = sourceId;
             next = [
-              ...next.map((entry) => !entry.final ? { ...entry, final: true } : entry),
+              ...next.map((entry) => entry.role === pending.role && !entry.final ? { ...entry, final: true } : entry),
               {
                 id: transcriptIdRef.current++,
                 sourceId,
@@ -389,7 +388,18 @@ export function RealtimePanel() {
 
     const micSamples = new Uint8Array(analyser.frequencyBinCount);
     const remoteSamples = new Uint8Array(analyser.frequencyBinCount);
+    let lastPlaybackAt = 0;
     const draw = () => {
+      const outputLevel = rmsLevel(remoteAnalyserRef.current, remoteSamples);
+      const now = performance.now();
+      if (outputLevel > 0.025) lastPlaybackAt = now;
+      const nextPhase: LivePhase = now - lastPlaybackAt < 250 && lastPlaybackAt > 0
+        ? "speaking" : micActiveRef.current ? "listening" : "muted";
+      if (["speaking", "listening", "muted", "thinking"].includes(currentPhaseRef.current) && nextPhase !== currentPhaseRef.current) {
+        currentPhaseRef.current = nextPhase;
+        setPhase(nextPhase);
+        setStatusDetail(PHASE_COPY[nextPhase].detail);
+      }
       const activeAnalyser = currentPhaseRef.current === "speaking"
         ? remoteAnalyserRef.current
         : micAnalyserRef.current;
@@ -413,14 +423,34 @@ export function RealtimePanel() {
     if (chatDelta?.cursor?.role === "assistant" && chatDelta.cursor.messageId) {
       parentMessageIdRef.current = chatDelta.cursor.messageId;
     }
-    const transcriptUpdate = chatDelta?.update || transcriptUpdateFromEvent(data);
+    const transcriptUpdate = liveTranscriptRef.current.push(data) || chatDelta?.update || transcriptUpdateFromEvent(data);
     const isOptimisticRelayUser = chatDelta?.cursor?.role === "user"
       && !!chatDelta.cursor.messageId
       && chatDelta.cursor.messageId === relayUserMessageIdRef.current;
     if (transcriptUpdate && !isOptimisticRelayUser) applyTranscriptUpdate(transcriptUpdate);
     if (chatDelta?.cursor?.role === "assistant") setTextApplying(false);
 
-    if (type === "input_audio_buffer.speech_started") {
+    if (type === "session.closed") {
+      setConnected(false);
+      setConnecting(false);
+      setTextApplying(false);
+      stopMetering();
+      micActiveRef.current = false;
+      setMicActive(false);
+      if (data.reason !== "connection_lost") {
+        disconnectRequestedRef.current = true;
+        if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+        realtimeRef.current?.close();
+        realtimeRef.current = null;
+        setPhase("offline");
+        setStatusDetail(`语音会话已结束：${String(data.reason || "连接关闭")}`);
+      }
+      if (!disconnectRequestedRef.current) {
+        setPhase("error");
+        setStatusDetail(`语音会话已结束：${String(data.reason || "连接关闭")}`);
+      }
+    } else if (type === "input_audio_buffer.speech_started") {
       startTurn("user");
       setPhase("listening");
       setStatusDetail("正在捕捉你的声音");
@@ -480,12 +510,13 @@ export function RealtimePanel() {
     } else if (!transcriptUpdate) {
       addLog("recv", `${type}: ${JSON.stringify(data).substring(0, 180)}`);
     }
-  }, [addLog, applyTranscriptUpdate, startTurn]);
+  }, [addLog, applyTranscriptUpdate, startTurn, stopMetering]);
 
   const secureContext = typeof window !== "undefined" && window.isSecureContext;
   const canUseMic = secureContext && !!navigator.mediaDevices?.getUserMedia;
 
   const startMic = useCallback(() => {
+    desiredMicRef.current = true;
     realtimeRef.current?.setMicrophoneEnabled(true);
     micActiveRef.current = true;
     setMicActive(true);
@@ -495,6 +526,7 @@ export function RealtimePanel() {
   }, [addLog]);
 
   const stopMic = useCallback(() => {
+    desiredMicRef.current = false;
     realtimeRef.current?.setMicrophoneEnabled(false);
     micActiveRef.current = false;
     setMicActive(false);
@@ -520,11 +552,11 @@ export function RealtimePanel() {
         final: true,
         sourceId: startTurn("user"),
       });
-      addLog("send", `relay_message: ${normalized.substring(0, 60)}`);
+      addLog("send", `session.instructions.append: ${normalized.substring(0, 60)}`);
       setTextInput("");
       setTextApplying(false);
     } catch (err) {
-      addLog("error", `relay_message failed: ${err instanceof Error ? err.message : String(err)}`);
+      addLog("error", `session.instructions.append failed: ${err instanceof Error ? err.message : String(err)}`);
       setPhase(micActiveRef.current ? "listening" : "muted");
       setStatusDetail("文字发送失败，请重试");
       setTextApplying(false);
@@ -573,7 +605,7 @@ export function RealtimePanel() {
     addLog("info", `${reason}，自动重连 ${reconnectCountRef.current}/${MAX_NETWORK_RETRIES}`);
     reconnectTimerRef.current = window.setTimeout(() => {
       reconnectTimerRef.current = null;
-      void connectRef.current(false);
+      void connectRef.current(false, true);
     }, delay);
   }, [addLog]);
 
@@ -585,6 +617,9 @@ export function RealtimePanel() {
       return;
     }
     disconnectRequestedRef.current = false;
+    if (!preserveSession && !retry) desiredMicRef.current = true;
+    liveTranscriptRef.current = new LiveTranscriptGrouper();
+    activeTurnRef.current = { user: null, assistant: null };
     realtimeRef.current?.close();
     stopMetering();
     setConnected(false);
@@ -596,7 +631,7 @@ export function RealtimePanel() {
       retry
         ? "正在选择下一个可用账号"
         : preserveSession
-          ? "正在应用文字并恢复语音会话"
+          ? "正在重建语音会话并携带近期历史"
           : PHASE_COPY.connecting.detail,
     );
     terminalErrorRef.current = "";
@@ -616,11 +651,13 @@ export function RealtimePanel() {
       resumeHandleRef.current = "";
     }
 
+    let sessionReady = false;
     const handlers: RealtimeConnectionHandlers = {
       onEvent: handleRealtimeEvent,
       onRemoteStream: attachRemoteMeter,
       onConnectionState: (state) => {
         addLog("info", `WebRTC: ${state}`);
+        if (!sessionReady) return;
         if (state === "connected" && reconnectTimerRef.current !== null) {
           window.clearTimeout(reconnectTimerRef.current);
           reconnectTimerRef.current = null;
@@ -643,14 +680,19 @@ export function RealtimePanel() {
         if (state === "muted") setStatusDetail("麦克风没有提供音频，请检查系统输入设备和权限");
       },
     };
-    let connection: RealtimeConnection = new RealtimeWebSocketConnection(handlers);
+    let connection: RealtimeConnection = new RealtimeWebRTCConnection(handlers, "live");
     realtimeRef.current = connection;
 
     try {
-      addLog("info", retry ? "正在切换账号并重连…" : "正在建立平滑语音中继…");
+      addLog("info", retry ? "正在切换账号并重连…" : "正在建立 Live WebRTC 会话…");
       const options = {
         authorization: `Bearer ${session.key}`,
         voice,
+        microphoneEnabled: desiredMicRef.current,
+        initialHistory: preserveSession || retry ? transcriptRef.current.slice(-8).filter(item => item.text.trim()).map(item => ({
+          role: item.role,
+          content: [{ type: (item.role === "user" ? "input_text" : "output_text") as "input_text" | "output_text", text: item.text.slice(-600) }],
+        })) : undefined,
         baseUrl: webConfig.apiUrl || "",
         attemptId: (retry || preserveSession) ? attemptIdRef.current : undefined,
         conversationId: preserveSession ? conversationIdRef.current : undefined,
@@ -663,26 +705,28 @@ export function RealtimePanel() {
       } catch (relayError) {
         if (realtimeRef.current !== connection) return;
         connection.close();
+        if (relayError instanceof RealtimeSignalingError && relayError.status >= 400 && relayError.status < 500) throw relayError;
         addLog(
           "info",
-          `平滑中继不可用，回退 WebRTC：${relayError instanceof Error ? relayError.message : String(relayError)}`,
+          `WebRTC 不可用，回退 Live WebSocket：${relayError instanceof Error ? relayError.message : String(relayError)}`,
         );
-        connection = new RealtimeWebRTCConnection(handlers);
+        connection = new RealtimeWebSocketConnection(handlers, "live");
         realtimeRef.current = connection;
         result = await connection.connect(options);
       }
       if (realtimeRef.current !== connection) return;
+      sessionReady = true;
       setConnected(true);
       reconnectCountRef.current = 0;
       attemptIdRef.current = result.attemptId;
       if (result.resumeHandle) resumeHandleRef.current = result.resumeHandle;
       setConnecting(false);
       if (preserveSession) setTextApplying(false);
-      micActiveRef.current = true;
-      setMicActive(true);
-      setPhase("listening");
-      setStatusDetail(PHASE_COPY.listening.detail);
-      addLog("recv", `session.created (${result.location}) request=${result.requestId || "-"}`);
+      micActiveRef.current = desiredMicRef.current;
+      setMicActive(desiredMicRef.current);
+      setPhase(desiredMicRef.current ? "listening" : "muted");
+      setStatusDetail(PHASE_COPY[desiredMicRef.current ? "listening" : "muted"].detail);
+      addLog("recv", `session.started (${result.location}) request=${result.requestId || "-"}`);
       const microphone = connection.getMicrophoneStream();
       if (microphone) startMetering(microphone);
       const remote = connection.getRemoteStream();
@@ -740,7 +784,7 @@ export function RealtimePanel() {
 
   const phaseCopy = PHASE_COPY[phase];
   const qualityLabel = quality?.candidateType === "relay"
-    ? "平滑中继"
+    ? "WebSocket 中继"
     : !quality || (quality.roundTripTimeMs === undefined && quality.jitterMs === undefined)
     ? "检测中"
     : (quality.packetLossPercent || 0) > 5 || (quality.concealedSamplePercent || 0) > 3 || (quality.jitterMs || 0) > 80

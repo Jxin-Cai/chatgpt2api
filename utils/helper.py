@@ -218,9 +218,12 @@ def sse_json_stream(items) -> Iterator[str]:
             "error_type": exc.__class__.__name__,
             "error": str(exc),
         })
-        error = exc.to_openai_error() if hasattr(exc, "to_openai_error") else {
-            "error": {"message": str(exc), "type": exc.__class__.__name__}
-        }
+        from services.protocol.error_response import openai_error_payload
+
+        detail = exc.to_openai_error() if hasattr(exc, "to_openai_error") else (
+            exc.detail if isinstance(exc, HTTPException) else str(exc)
+        )
+        error = openai_error_payload(detail, int(getattr(exc, "status_code", 502)))
         yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 

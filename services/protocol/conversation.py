@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from utils.text_models import DEFAULT_TEXT_MODEL
+
 import base64
 import json
 import re
@@ -302,7 +304,7 @@ def format_image_result(
 
 @dataclass
 class ConversationRequest:
-    model: str = "auto"
+    model: str = DEFAULT_TEXT_MODEL
     prompt: str = ""
     messages: list[dict[str, Any]] | None = None
     thinking_effort: str = ""
@@ -791,7 +793,7 @@ def iter_conversation_payloads(payloads: Iterator[str], history_text: str = "",
 def conversation_events(
     backend: OpenAIBackendAPI,
     messages: list[dict[str, Any]] | None = None,
-    model: str = "auto",
+    model: str = DEFAULT_TEXT_MODEL,
     prompt: str = "",
     images: list[str] | None = None,
     size: str | None = None,
@@ -802,12 +804,10 @@ def conversation_events(
     image_model = is_supported_image_model(model)
     upstream_model = model
     if not image_model:
-        from services.model_service import apply_model_identity_messages, model_catalog_service
+        from services.model_service import model_catalog_service
 
-        # ChatGPT Web's hidden identity stays on the account default (usually
-        # GPT-5.6 Sol) even when the conversation slug is Luna/Terra/Astra.
-        # Tell the model the public /v1/models name that the client called.
-        normalized = apply_model_identity_messages(normalized, model)
+        # Routing is established by the upstream slug, never by prompting the
+        # model to claim a particular identity.
         upstream_model = model_catalog_service.resolve_model(model)
     history_text = "" if image_model else assistant_history_text(normalized)
     history_messages = [] if image_model else assistant_history_messages(normalized)
@@ -823,7 +823,7 @@ def conversation_events(
     yield from iter_conversation_payloads(payloads, history_text, history_messages)
 
 
-def text_backend(model: str = "auto") -> OpenAIBackendAPI:
+def text_backend(model: str = DEFAULT_TEXT_MODEL) -> OpenAIBackendAPI:
     return OpenAIBackendAPI(access_token=account_service.get_text_access_token(model=model))
 
 
@@ -831,6 +831,7 @@ def stream_text_parts(backend: OpenAIBackendAPI, request: ConversationRequest) -
     attempted_tokens: set[str] = set()
     token = getattr(backend, "access_token", "")
     emitted = False
+    first_attempt = True
     while True:
         if token and token in attempted_tokens:
             raise RuntimeError("no available text account")
@@ -838,7 +839,8 @@ def stream_text_parts(backend: OpenAIBackendAPI, request: ConversationRequest) -
             attempted_tokens.add(token)
         active_backend = None
         try:
-            active_backend = OpenAIBackendAPI(access_token=token)
+            active_backend = backend if first_attempt else OpenAIBackendAPI(access_token=token)
+            first_attempt = False
             for event in conversation_events(
                 active_backend,
                 messages=request.messages,
@@ -872,7 +874,9 @@ def stream_text_parts(backend: OpenAIBackendAPI, request: ConversationRequest) -
             raise
         finally:
             if active_backend is not None:
-                active_backend.close()
+                close = getattr(active_backend, "close", None)
+                if close is not None:
+                    close()
 
 
 def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[str]:

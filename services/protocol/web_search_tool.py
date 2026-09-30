@@ -4,14 +4,11 @@ import re
 from typing import Any
 
 from services.account_service import account_service
-from services.openai_backend_api import OpenAIBackendAPI, SEARCH_MODEL
+from services.model_service import model_catalog_service, require_supported_text_model
+from services.openai_backend_api import OpenAIBackendAPI
+from utils.text_models import DEFAULT_TEXT_MODEL
 
 WEB_SEARCH_TOOL_TYPES = {"web_search", "web_search_preview", "web_search_preview_2025_03_11"}
-SEARCH_CHAT_MODEL_PREFIXES = (
-    "gpt-4o-search-preview",
-    "gpt-4o-mini-search-preview",
-    "gpt-5-search-api",
-)
 
 
 def _tool_type(tool: object) -> str:
@@ -29,14 +26,9 @@ def has_web_search_tool(body: dict[str, Any]) -> bool:
 
 
 def is_web_search_chat_request(body: dict[str, Any]) -> bool:
-    model = str(body.get("model") or "").strip()
     return (
         has_web_search_tool(body)
         or isinstance(body.get("web_search_options"), dict)
-        or any(
-            model == prefix or model.startswith(f"{prefix}-")
-            for prefix in SEARCH_CHAT_MODEL_PREFIXES
-        )
     )
 
 
@@ -223,11 +215,13 @@ def text_with_url_citations(result: dict[str, Any]) -> tuple[str, list[dict[str,
     return text.strip(), annotations
 
 
-def run_web_search(query: str) -> dict[str, Any]:
-    token = account_service.get_text_access_token(model=SEARCH_MODEL)
+def run_web_search(query: str, model: str = DEFAULT_TEXT_MODEL) -> dict[str, Any]:
+    model = require_supported_text_model(model)
+    token = account_service.get_text_access_token(model=model)
+    upstream_model = model_catalog_service.resolve_model(model)
     backend = OpenAIBackendAPI(token)
     try:
-        result = backend.search(query)
+        result = backend.search(query, model=upstream_model)
     finally:
         backend.close()
     account_service.mark_text_used(token)

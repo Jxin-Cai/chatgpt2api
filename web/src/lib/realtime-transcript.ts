@@ -215,3 +215,26 @@ export function chatTranscriptUpdateFromEvent(
       : null,
   };
 }
+
+/** Display grouping only: a caption boundary is not a server turn or playback end. */
+let nextLiveTranscriptSession = 0;
+export class LiveTranscriptGrouper {
+  private readonly session = ++nextLiveTranscriptSession;
+  private segments: Partial<Record<"user" | "assistant", { id: string; end: number }>> = {};
+  private sequence = 0;
+
+  push(data: RealtimeEvent): TranscriptUpdate | null {
+    const role = data.type === "session.input_transcript.delta" ? "user"
+      : data.type === "session.output_transcript.delta" ? "assistant" : null;
+    if (!role || typeof data.delta !== "string") return null;
+    const start = typeof data.start_ms === "number" ? data.start_ms : 0;
+    const end = typeof data.end_ms === "number" ? data.end_ms : start;
+    let segment = this.segments[role];
+    if (!segment || start - segment.end > 1500 || end < segment.end) {
+      segment = { id: `live-${this.session}-${role}-${++this.sequence}`, end };
+      this.segments[role] = segment;
+    }
+    segment.end = Math.max(segment.end, end);
+    return { role, text: data.delta, mode: "append", final: false, sourceId: segment.id };
+  }
+}

@@ -12,6 +12,8 @@ export type ConnectOptions = {
   conversationId?: string;
   parentMessageId?: string;
   resumeHandle?: string;
+  microphoneEnabled?: boolean;
+  initialHistory?: Array<{ role: "user" | "assistant"; content: Array<{ type: "input_text" | "output_text"; text: string }> }>;
 };
 
 export type RealtimeConnectionQuality = {
@@ -74,7 +76,7 @@ export interface RealtimeConnection {
 const CONNECTION_TIMEOUT_MS = 15_000;
 const ICE_GATHERING_TIMEOUT_MS = 5_000;
 const DATA_CHANNEL_TIMEOUT_MS = 10_000;
-const INITIAL_JITTER_BUFFER_MS = 280;
+const INITIAL_JITTER_BUFFER_MS = 120;
 const MAX_JITTER_BUFFER_MS = 600;
 
 type BufferedAudioReceiver = RTCRtpReceiver & {
@@ -207,7 +209,10 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
   private healthyQualitySamples = 0;
   private closed = true;
 
-  constructor(private readonly handlers: RealtimeConnectionHandlers) {}
+  constructor(
+    private readonly handlers: RealtimeConnectionHandlers,
+    private readonly protocol: "realtime" | "live" = "realtime",
+  ) {}
 
   async connect(options: ConnectOptions): Promise<RealtimeConnectionResult> {
     this.close();
@@ -261,28 +266,41 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
       track.addEventListener("ended", () => {
         if (!this.closed) this.handlers.onMicrophoneEnded?.();
       }, { once: true });
+      track.enabled = options.microphoneEnabled !== false;
       pc.addTrack(track, microphone);
       notifyMicrophoneState();
     });
-    pc.addTransceiver("video", { direction: "sendonly" });
+    if (this.protocol === "realtime") pc.addTransceiver("video", { direction: "sendonly" });
 
-    const dc = pc.createDataChannel("", { negotiated: true, id: 0, ordered: true });
+    const dc = this.protocol === "live"
+      ? pc.createDataChannel("oai-events", { ordered: true })
+      : pc.createDataChannel("", { negotiated: true, id: 0, ordered: true });
+    let liveStarted = false;
+    let liveStartupError = "";
     this.dataChannel = dc;
     dc.onmessage = (message) => {
+      if (this.closed) return;
       if (typeof message.data !== "string") return;
       try {
         const event = decodeDataChannelMessage(message.data);
+        if (event.type === "session.started") liveStarted = true;
+        if (event.type === "error" && !liveStarted) {
+          const error = event.error as { message?: string } | undefined;
+          liveStartupError = error?.message || "Live 会话启动失败";
+        }
         const payload = event.payload;
         this.handlers.onEvent(
           payload && typeof payload === "object"
             ? { type: event.type, ...(payload as Record<string, unknown>) }
             : event,
         );
+        if (event.type === "session.closed") this.handlers.onConnectionState("disconnected");
       } catch {
         this.handlers.onEvent({ type: "datachannel.message", raw: message.data.slice(0, 1000) });
       }
     };
     dc.onopen = () => {
+      if (this.protocol === "live") return;
       this.sendWrapped({
         type: "track_state",
         payload: {
@@ -303,66 +321,98 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
 
     const signalingAbort = new AbortController();
     this.signalingAbort = signalingAbort;
+    const signalingTimeout = window.setTimeout(() => signalingAbort.abort(), 60_000);
+    signalingAbort.signal.addEventListener("abort", () => window.clearTimeout(signalingTimeout), { once: true });
 
-    // 第一步：用项目 API Key 换取 OpenAI GA 形状的 ephemeral key。
-    // 续接/重试参数放在 session.chatgpt2api 扩展命名空间中，切换官方
-    // API 时删除该字段即可。
-    const chatgpt2api: Record<string, string> = {};
-    if (options.attemptId) chatgpt2api.attempt_id = options.attemptId;
-    if (options.conversationId) chatgpt2api.conversation_id = options.conversationId;
-    if (options.parentMessageId) chatgpt2api.parent_message_id = options.parentMessageId;
-    if (options.resumeHandle) chatgpt2api.resume_handle = options.resumeHandle;
-    const secretResponse = await fetch(realtimeEndpoint(options.baseUrl, "/v1/realtime/client_secrets"), {
-      method: "POST",
-      headers: {
-        Authorization: options.authorization,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        session: {
-          type: "realtime",
-          audio: { output: { voice: options.voice } },
-          ...(Object.keys(chatgpt2api).length > 0 ? { chatgpt2api } : {}),
-        },
-      }),
-      signal: signalingAbort.signal,
-    });
-    if (!secretResponse.ok) {
+    let answerSdp: string;
+    let location = "";
+    let callId = "";
+    let sessionHandle = "";
+    let requestId = "";
+    try {
+      if (this.protocol === "live") {
+        const response = await fetch(realtimeEndpoint(options.baseUrl, "/v1/live/sessions"), {
+          method: "POST",
+          headers: { Authorization: options.authorization, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session: {
+              model: "gpt-live-1",
+              audio: { output: { voice: options.voice } },
+              ...(options.initialHistory?.length ? { input: options.initialHistory } : {}),
+            },
+            transport: { type: "webrtc", sdp: pc.localDescription.sdp },
+          }),
+          signal: signalingAbort.signal,
+        });
+        if (!response.ok) throw await signalingErrorFromResponse(response, "Live 信令失败");
+        const result = await response.json() as { session: { id: string }; transport: { type: string; sdp: string } };
+        answerSdp = result.transport.sdp;
+        callId = result.session.id;
+        location = `/v1/live/sessions/${callId}`;
+        requestId = response.headers.get("X-Request-ID") || "";
+      } else {
+        // 第一步：用项目 API Key 换取 OpenAI GA 形状的 ephemeral key。
+        // 续接/重试参数放在 session.chatgpt2api 扩展命名空间中，切换官方
+        // API 时删除该字段即可。
+        const chatgpt2api: Record<string, string> = {};
+        if (options.attemptId) chatgpt2api.attempt_id = options.attemptId;
+        if (options.conversationId) chatgpt2api.conversation_id = options.conversationId;
+        if (options.parentMessageId) chatgpt2api.parent_message_id = options.parentMessageId;
+        if (options.resumeHandle) chatgpt2api.resume_handle = options.resumeHandle;
+        const secretResponse = await fetch(realtimeEndpoint(options.baseUrl, "/v1/realtime/client_secrets"), {
+          method: "POST",
+          headers: {
+            Authorization: options.authorization,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            session: {
+              type: "realtime",
+              audio: { output: { voice: options.voice } },
+              ...(Object.keys(chatgpt2api).length > 0 ? { chatgpt2api } : {}),
+            },
+          }),
+          signal: signalingAbort.signal,
+        });
+        if (!secretResponse.ok) {
+          throw await signalingErrorFromResponse(secretResponse, "实时信令失败", options.attemptId || "");
+        }
+        const secret = (await secretResponse.json()) as { value?: string };
+        if (!secret.value) {
+          throw new Error("实时信令返回了无效的 ephemeral key");
+        }
+
+        // 第二步：官方 GA 形状的 SDP 交换 —— 裸 SDP 进，裸 SDP 出，
+        // call id 在 Location 响应头。
+        const callResponse = await fetch(realtimeEndpoint(options.baseUrl, "/v1/realtime/calls"), {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${secret.value}`,
+            "Content-Type": "application/sdp",
+          },
+          body: pc.localDescription.sdp,
+          signal: signalingAbort.signal,
+        });
+        if (!callResponse.ok) {
+          throw await signalingErrorFromResponse(callResponse, "实时信令失败", options.attemptId || "");
+        }
+        answerSdp = await callResponse.text();
+        if (!answerSdp.trim()) throw new Error("实时信令返回了无效响应");
+        location = callResponse.headers.get("Location") || "";
+        callId = callResponse.headers.get("X-Attempt-Id")
+          || location.split("/").filter(Boolean).pop()
+          || options.attemptId
+          || "";
+        sessionHandle = callResponse.headers.get("X-Session-Handle")
+          || callResponse.headers.get("X-Resume-Handle")
+          || "";
+
+        requestId = callResponse.headers.get("X-Request-ID") || "";
+      }
+    } finally {
+      window.clearTimeout(signalingTimeout);
       if (this.signalingAbort === signalingAbort) this.signalingAbort = null;
-      throw await signalingErrorFromResponse(secretResponse, "实时信令失败", options.attemptId || "");
     }
-    const secret = (await secretResponse.json()) as { value?: string };
-    if (!secret.value) {
-      if (this.signalingAbort === signalingAbort) this.signalingAbort = null;
-      throw new Error("实时信令返回了无效的 ephemeral key");
-    }
-
-    // 第二步：官方 GA 形状的 SDP 交换 —— 裸 SDP 进，裸 SDP 出，
-    // call id 在 Location 响应头。
-    const callResponse = await fetch(realtimeEndpoint(options.baseUrl, "/v1/realtime/calls"), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${secret.value}`,
-        "Content-Type": "application/sdp",
-      },
-      body: pc.localDescription.sdp,
-      signal: signalingAbort.signal,
-    });
-    if (this.signalingAbort === signalingAbort) this.signalingAbort = null;
-    if (!callResponse.ok) {
-      throw await signalingErrorFromResponse(callResponse, "实时信令失败", options.attemptId || "");
-    }
-    const answerSdp = await callResponse.text();
-    if (!answerSdp.trim()) throw new Error("实时信令返回了无效响应");
-    const location = callResponse.headers.get("Location") || "";
-    const callId = callResponse.headers.get("X-Attempt-Id")
-      || location.split("/").filter(Boolean).pop()
-      || options.attemptId
-      || "";
-    const sessionHandle = callResponse.headers.get("X-Session-Handle")
-      || callResponse.headers.get("X-Resume-Handle")
-      || "";
-
     // Quota events can arrive as soon as the DataChannel opens, before connect()
     // finishes awaiting both transports. Make the report context available first.
     this.sessionReport = {
@@ -373,10 +423,19 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
     if (this.closed) throw new Error("连接已取消");
     await pc.setRemoteDescription({ type: "answer", sdp: normalizeSdpLineEndings(answerSdp) });
     await Promise.all([waitForConnection(pc), waitForDataChannel(dc)]);
+    if (this.protocol === "live") {
+      const deadline = Date.now() + DATA_CHANNEL_TIMEOUT_MS;
+      while (!liveStarted) {
+        if (liveStartupError) throw new Error(liveStartupError);
+        if (this.closed || dc.readyState !== "open" || Date.now() > deadline) throw new Error("未收到 session.started");
+        await new Promise(resolve => window.setTimeout(resolve, 25));
+      }
+      this.setMicrophoneEnabled(options.microphoneEnabled !== false);
+    }
     return {
       location,
       attemptId: callId,
-      requestId: callResponse.headers.get("X-Request-ID") || "",
+      requestId,
       sessionHandle,
       resumeHandle: sessionHandle,
     };
@@ -387,6 +446,7 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
     restoreAt?: string;
     retryAfterSeconds?: number;
   }): Promise<void> {
+    if (this.protocol === "live") return;
     const report = this.sessionReport;
     if (!report?.callId) return;
     try {
@@ -417,6 +477,10 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
     if (this.dataChannel?.readyState !== "open") throw new Error("实时事件通道未连接");
 
     const messageId = crypto.randomUUID();
+    if (this.protocol === "live") {
+      this.sendWrapped({ type: "session.instructions.append", event_id: messageId, delegation_id: null, content: text });
+      return messageId;
+    }
     this.sendWrapped({
       type: "relay_message",
       payload: {
@@ -438,6 +502,10 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
     this.microphone?.getAudioTracks().forEach((track) => {
       track.enabled = enabled;
     });
+    if (this.protocol === "live") {
+      this.sendWrapped({ type: enabled ? "session.input_audio.unmute" : "session.input_audio.mute" });
+      return;
+    }
     this.sendWrapped({
       type: "track_state",
       payload: {
@@ -472,7 +540,24 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
     if (this.dataChannel?.readyState === "open") {
       this.setMicrophoneEnabled(false);
     }
-    this.dataChannel?.close();
+    const closingChannel = this.dataChannel;
+    const closingPeer = this.pc;
+    if (this.protocol === "live" && closingChannel?.readyState === "open") {
+      const finish = () => { closingChannel.close(); closingPeer?.close(); };
+      const timeout = window.setTimeout(finish, 3000);
+      closingChannel.addEventListener("message", (message) => {
+        try {
+          if (JSON.parse(message.data).type === "session.closed") {
+            window.clearTimeout(timeout);
+            finish();
+          }
+        } catch { /* Ignore malformed terminal events. */ }
+      });
+      closingChannel.send(JSON.stringify({ type: "session.close" }));
+    } else {
+      closingChannel?.close();
+      closingPeer?.close();
+    }
     this.dataChannel = null;
     this.microphone?.getTracks().forEach((track) => track.stop());
     this.microphone = null;
@@ -485,14 +570,15 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
     if (this.pc) {
       this.pc.ontrack = null;
       this.pc.onconnectionstatechange = null;
-      this.pc.close();
       this.pc = null;
     }
   }
 
   private sendWrapped(event: RealtimeEvent): void {
     if (this.dataChannel?.readyState !== "open") return;
-    this.dataChannel.send(JSON.stringify({ type: "data_message", data: JSON.stringify(event) }));
+    this.dataChannel.send(JSON.stringify(this.protocol === "live"
+      ? event
+      : { type: "data_message", data: JSON.stringify(event) }));
   }
 
   private setJitterBufferTarget(targetMs: number): void {

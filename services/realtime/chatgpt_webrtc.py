@@ -166,17 +166,20 @@ async def create_peer_connection(
     access_token: str,
     voice: str = "ember",
     language: str = "auto",
-) -> tuple[RTCPeerConnection, BufferedAudioStreamTrack, object, str]:
+    on_message=None,
+) -> tuple[RTCPeerConnection, BufferedAudioStreamTrack, object, object, str]:
     """创建 WebRTC PeerConnection 并完成与 ChatGPT 的信令交换。
 
     Returns:
-        (pc, input_audio_track, data_channel, session_location)
+        (pc, input_audio_track, data_channel, remote_audio_track, session_location)
     """
     pc = RTCPeerConnection()
     input_track = BufferedAudioStreamTrack()
     pc.addTrack(input_track)
     pc.addTransceiver("video", direction="sendonly")
     dc = pc.createDataChannel("", negotiated=True, id=0)
+    if on_message:
+        dc.on("message", on_message)
 
     # 预注册 track 事件 — 必须在 setRemoteDescription 之前
     remote_audio_track_holder = []
@@ -186,21 +189,19 @@ async def create_peer_connection(
         if track.kind == "audio":
             remote_audio_track_holder.append(track)
 
-    offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-
     try:
+        offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
         answer_sdp, location = await exchange_realtime_sdp(
             access_token=access_token,
             offer_sdp=pc.localDescription.sdp,
             voice=voice,
             language=language,
         )
-    except Exception:
+        await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
+    except BaseException:
         await pc.close()
         raise
-
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
 
     remote_audio = remote_audio_track_holder[0] if remote_audio_track_holder else None
     return pc, input_track, dc, remote_audio, location

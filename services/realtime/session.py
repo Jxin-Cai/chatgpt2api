@@ -15,12 +15,13 @@ from fastapi import WebSocket
 
 from services.realtime.audio_track import BufferedAudioStreamTrack, SAMPLE_RATE
 from services.realtime.chatgpt_webrtc import create_peer_connection
+from services.realtime.signaling import UpstreamSignalingError
 from utils.log import logger
 
 MAX_INPUT_AUDIO_B64_CHARS = 512_000
 DATA_CHANNEL_QUEUE_SIZE = 512
 AUDIO_OUT_QUEUE_SIZE = 80
-EVENT_OUT_QUEUE_SIZE = 128
+EVENT_OUT_QUEUE_SIZE = 512
 CHATGPT_WEB_REALTIME_MODEL = "chatgpt-web-voice"
 OUTPUT_CHUNK_SECONDS = 0.04
 MAX_TRAILING_SILENCE_SECONDS = 2.8
@@ -60,7 +61,9 @@ def data_channel_message_priority(message: str) -> int:
     except (json.JSONDecodeError, TypeError):
         return 1
     event_type = str(decoded.get("type") or "")
-    if event_type in {"error", "goodbye"} or event_type.endswith((".done", ".completed")):
+    if event_type in {"error", "goodbye"}:
+        return 4
+    if event_type in {"input_audio_buffer.speech_started", "state_update"} or event_type.endswith((".done", ".completed")):
         return 3
     if event_type == "chat_message_delta":
         return 2
@@ -210,6 +213,11 @@ class PcmOutputAssembler:
             self._silence_bytes = 0
         return events
 
+    def discard(self) -> None:
+        self._buffer.clear()
+        self._speaking = False
+        self._silence_bytes = 0
+
     def _flush(self, force: bool) -> list[AudioProtocolEvent]:
         events: list[AudioProtocolEvent] = []
         while len(self._buffer) >= self.chunk_bytes:
@@ -257,13 +265,17 @@ class RealtimeSession:
         self._tasks: list[asyncio.Task] = []
         self._dc_messages: asyncio.Queue[str] = asyncio.Queue(maxsize=DATA_CHANNEL_QUEUE_SIZE)
         self._dc_dropped_messages = 0
+        self._dc_overflow = False
         self._audio_out: asyncio.Queue[str] = asyncio.Queue(maxsize=AUDIO_OUT_QUEUE_SIZE)
         self._event_out: asyncio.Queue[str] = asyncio.Queue(maxsize=EVENT_OUT_QUEUE_SIZE)
         self._out_ready = asyncio.Event()
         self._writer_started = False
+        self._outbound_sending = False
         self._output_assembler = PcmOutputAssembler()
         self._end_audio_output = False
-        self._latest_transcript: str | None = None
+        self._control_out: asyncio.Queue[str] = asyncio.Queue(maxsize=32)
+        self._audio_burst = 0
+        self._output_suppressed = False
         self._last_media_s: float | None = None
         self._last_frame_s = 0.0
         self._start_time = time.time()
@@ -318,7 +330,9 @@ class RealtimeSession:
                 if self._account_available_callback:
                     self._account_available_callback(access_token)
                 return
-            except RealtimeQuotaExceeded as exc:
+            except (RealtimeQuotaExceeded, UpstreamSignalingError) as exc:
+                if isinstance(exc, UpstreamSignalingError) and not exc.is_quota_limited:
+                    raise
                 if self._account_limited_callback:
                     self._account_limited_callback(access_token)
                 excluded.add(access_token)
@@ -341,13 +355,9 @@ class RealtimeSession:
         self._pc, self._input_track, self._data_channel, remote_audio, self._location = await create_peer_connection(
             access_token=access_token,
             voice=self._voice,
+            on_message=lambda message: self._queue_dc_message(message) if isinstance(message, str) else None,
         )
         self._remote_audio_track = remote_audio
-
-        @self._data_channel.on("message")
-        def on_dc_message(message):
-            if isinstance(message, str):
-                self._queue_dc_message(message)
 
         self._connection_ready = asyncio.Event()
 
@@ -366,6 +376,8 @@ class RealtimeSession:
                 self._remote_audio_track = track
 
         # 等待连接建立
+        if self._pc.connectionState in ("connected", "failed", "closed"):
+            self._connection_ready.set()
         try:
             await asyncio.wait_for(self._connection_ready.wait(), timeout=15)
         except asyncio.TimeoutError:
@@ -400,7 +412,7 @@ class RealtimeSession:
             logger.info("[realtime] Sent track_state to activate VAD")
             await self._check_initial_upstream_status()
         else:
-            logger.warning(f"[realtime] DataChannel not open: {self._data_channel.readyState if self._data_channel else 'None'}")
+            raise RuntimeError("Upstream realtime data channel did not open")
 
     async def _check_initial_upstream_status(self) -> None:
         """捕获连接后立即下发的额度错误，同时保留普通消息供客户端读取。"""
@@ -440,8 +452,12 @@ class RealtimeSession:
                 None,
             )
             if drop_index is None:
+                if incoming_priority >= 2:
+                    self._dc_overflow = True
                 self._dc_dropped_messages += 1
                 return
+            if data_channel_message_priority(queued[drop_index]) >= 2:
+                self._dc_overflow = True
             del queued[drop_index]
             self._dc_dropped_messages += 1
         try:
@@ -460,6 +476,10 @@ class RealtimeSession:
                 event = json.loads(raw)
             except json.JSONDecodeError:
                 await self._send_error("Invalid JSON")
+                continue
+
+            if not isinstance(event, dict):
+                await self._send_error("Expected a JSON object", code="invalid_event")
                 continue
 
             event_type = event.get("type", "")
@@ -582,6 +602,8 @@ class RealtimeSession:
             self._last_frame_s = (frame.samples / frame.sample_rate) if frame.sample_rate else 0.0
 
             recv_count += 1
+            if self._output_suppressed:
+                continue
             for output_frame, pcm_bytes in resample_to_pcm16_mono(resampler, frame):
                 if recv_count <= 3 or recv_count % 500 == 0:
                     logger.info(
@@ -600,6 +622,8 @@ class RealtimeSession:
             return
 
         while not self._closed:
+            if self._dc_overflow:
+                raise RuntimeError("Upstream event queue overflow; transcript continuity lost")
             try:
                 msg = await asyncio.wait_for(self._dc_messages.get(), timeout=2)
             except asyncio.TimeoutError:
@@ -629,10 +653,10 @@ class RealtimeSession:
                 await self._send_event("datachannel.message", {"raw": msg[:1000]})
 
     def _outbound_idle(self) -> bool:
-        return self._audio_out.empty() and self._latest_transcript is None and self._event_out.empty()
+        return self._audio_out.empty() and self._control_out.empty() and self._event_out.empty()
 
     async def _ws_writer(self) -> None:
-        """单写者：音频优先；转写只保留最新一帧，避免把播报卡出缺口。"""
+        """控制事件优先；音频与无损字幕公平调度，避免音频积压饿死打断。"""
         while not self._closed:
             if self._outbound_idle():
                 self._out_ready.clear()
@@ -643,21 +667,25 @@ class RealtimeSession:
                         continue
                 continue
             try:
-                if not self._audio_out.empty():
+                if not self._control_out.empty():
+                    payload = self._control_out.get_nowait()
+                elif not self._audio_out.empty() and (self._audio_burst < 4 or self._event_out.empty()):
                     payload = self._audio_out.get_nowait()
-                elif self._latest_transcript is not None:
-                    payload = self._latest_transcript
-                    self._latest_transcript = None
+                    self._audio_burst += 1
                 else:
                     payload = self._event_out.get_nowait()
+                    self._audio_burst = 0
             except asyncio.QueueEmpty:
                 continue
             try:
-                await self._ws.send_text(payload)
+                self._outbound_sending = True
+                await asyncio.wait_for(self._ws.send_text(payload), timeout=10)
             except Exception as exc:
                 if not self._closed:
                     logger.debug(f"[realtime] WebSocket send stopped: {exc}")
                 return
+            finally:
+                self._outbound_sending = False
 
     async def _send_event(self, event_type: str, data: dict) -> None:
         if self._closed:
@@ -667,24 +695,18 @@ class RealtimeSession:
             if not self._writer_started:
                 await self._ws.send_text(payload)
                 return
-            if event_type.startswith("response.audio."):
-                await self._audio_out.put(payload)
-            elif event_type == TRANSCRIPT_EVENT:
-                self._latest_transcript = payload
+            if event_type.startswith("response.audio.") or event_type == "session.output_audio.delta":
+                await asyncio.wait_for(self._audio_out.put(payload), timeout=5)
+            elif event_type in {"error", "goodbye", "input_audio_buffer.speech_started"}:
+                await asyncio.wait_for(self._control_out.put(payload), timeout=5)
             else:
-                if self._event_out.full():
-                    try:
-                        self._event_out.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
-                try:
-                    self._event_out.put_nowait(payload)
-                except asyncio.QueueFull:
-                    return
+                # chat_message_delta contains patches, not replaceable snapshots.
+                await asyncio.wait_for(self._event_out.put(payload), timeout=5)
             self._out_ready.set()
         except Exception as exc:
             if not self._closed:
                 logger.debug(f"[realtime] WebSocket send stopped: {exc}")
+            raise
 
     async def _send_error(self, message: str, code: str | None = None) -> None:
         error = {"message": message}

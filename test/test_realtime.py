@@ -496,7 +496,7 @@ def test_pcm_output_assembler_skips_idle_silence_and_keeps_speech_contiguous():
     assert reconstructed == loud + loud + quiet + quiet
 
 
-def test_ws_writer_sends_audio_before_transcript_backlog():
+def test_ws_writer_preserves_transcript_patches_and_prioritizes_interrupt():
     class FakeWs:
         def __init__(self):
             self.sent: list[str] = []
@@ -515,18 +515,19 @@ def test_ws_writer_sends_audio_before_transcript_backlog():
         for index in range(8):
             await session._send_event("chat_message_delta", {"n": index})
         await session._send_event("response.audio.delta", {"delta": "abc"})
+        await session._send_event("input_audio_buffer.speech_started", {})
         writer = asyncio.create_task(session._ws_writer())
         deadline = time.monotonic() + 0.5
-        while len(session._ws.sent) < 2 and time.monotonic() < deadline:
+        while len(session._ws.sent) < 10 and time.monotonic() < deadline:
             await asyncio.sleep(0)
         session._closed = True
         session._out_ready.set()
         await asyncio.wait_for(writer, timeout=1)
         types = [json.loads(item)["type"] for item in session._ws.sent]
-        assert types[0] == "response.audio.delta"
-        assert types.count("chat_message_delta") == 1
-        transcript = next(json.loads(item) for item in session._ws.sent if json.loads(item)["type"] == "chat_message_delta")
-        assert transcript["n"] == 7
+        assert types[0] == "input_audio_buffer.speech_started"
+        assert types[1] == "response.audio.delta"
+        patches = [json.loads(item)["n"] for item in session._ws.sent if json.loads(item)["type"] == "chat_message_delta"]
+        assert patches == list(range(8))
 
     asyncio.run(run())
 

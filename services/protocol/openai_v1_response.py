@@ -5,8 +5,13 @@ import uuid
 from typing import Any, Iterable, Iterator
 
 from fastapi import HTTPException
+from services.model_service import require_supported_text_model
 
 from services.protocol.chat_completion_cache import cache_key, chat_completion_cache, normalize_text_messages
+from services.protocol.chat_request import (
+    normalize_thinking_effort,
+    thinking_effort_from_body as _thinking_effort_from_body,
+)
 from services.protocol.conversation import (
     ConversationRequest,
     ImageOutput,
@@ -50,26 +55,8 @@ TOOL_UNAVAILABLE_SYSTEM_MESSAGE = (
 RESPONSE_CONTENT_PART_TYPES = {"text", "input_text", "output_text", "image_url", "input_image", "image"}
 
 
-def normalize_thinking_effort(value: object) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"", "none"}:
-        return ""
-    if normalized in {"low", "medium", "high"}:
-        return normalized
-    if normalized in {"xhigh", "extended"}:
-        return "extended"
-    return ""
-
-
 def thinking_effort_from_body(body: dict[str, Any]) -> str:
-    reasoning = body.get("reasoning")
-    if isinstance(reasoning, dict):
-        return normalize_thinking_effort(reasoning.get("effort"))
-    if "thinking_effort" in body:
-        return normalize_thinking_effort(body.get("thinking_effort"))
-    if "reasoning_effort" in body:
-        return normalize_thinking_effort(body.get("reasoning_effort"))
-    return ""
+    return _thinking_effort_from_body(body, responses=True)
 
 
 def is_text_response_request(body: dict[str, Any]) -> bool:
@@ -294,7 +281,7 @@ def response_completed(
 
 
 def text_response_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
-    model = str(body.get("model") or "auto").strip() or "auto"
+    model = require_supported_text_model(body.get("model"))
     messages = normalize_text_messages(normalize_messages(messages_from_input(body.get("input"), body.get("instructions"))))
     if has_unsupported_response_tools(body):
         messages.insert(0, {"role": "system", "content": TOOL_UNAVAILABLE_SYSTEM_MESSAGE})
@@ -302,7 +289,7 @@ def text_response_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]
 
 
 def stream_text_response(backend, body: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> Iterator[dict[str, Any]]:
-    model = str(body.get("model") or "auto").strip() or "auto"
+    model = require_supported_text_model(body.get("model"))
     messages = messages if messages is not None else messages_from_input(body.get("input"), body.get("instructions"))
     thinking_effort = thinking_effort_from_body(body)
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -327,7 +314,7 @@ def stream_text_response(backend, body: dict[str, Any], messages: list[dict[str,
 
 
 def stream_web_search_response(body: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> Iterator[dict[str, Any]]:
-    model = str(body.get("model") or "auto").strip() or "auto"
+    model = require_supported_text_model(body.get("model"))
     messages = messages if messages is not None else messages_from_input(body.get("input"), body.get("instructions"))
     query = search_query_from_messages(messages) or extract_response_prompt(body.get("input"))
     if not query:
@@ -343,7 +330,7 @@ def stream_web_search_response(body: dict[str, Any], messages: list[dict[str, An
     yield {"type": "response.output_item.added", "output_index": 0, "item": searching_item}
     yield {"type": "response.web_search_call.in_progress", "output_index": 0, "item_id": search_id}
     yield {"type": "response.web_search_call.searching", "output_index": 0, "item_id": search_id}
-    result = run_web_search(query)
+    result = run_web_search(query, model=model)
     search_item = web_search_call_item(query, search_id, "completed", normalized_sources(result))
     yield {"type": "response.web_search_call.completed", "output_index": 0, "item_id": search_id}
     yield {"type": "response.output_item.done", "output_index": 0, "item": search_item}
@@ -452,6 +439,9 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
 
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
+    if is_text_response_request(body):
+        require_supported_text_model(body.get("model"))
+    thinking_effort_from_body(body)
     events = response_events(body)
     if body.get("stream"):
         return events

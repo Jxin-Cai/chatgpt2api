@@ -117,10 +117,10 @@ environment:
 
 - 兼容 `POST /v1/images/generations` 图片生成接口
 - 兼容 `POST /v1/images/edits` 图片编辑接口
-- 兼容面向图片场景的 `POST /v1/chat/completions`
+- 兼容文本、多模态输入、函数工具、网页搜索与图片场景的 `POST /v1/chat/completions`
 - 兼容面向图片场景的 `POST /v1/responses`
-- 提供对齐 OpenAI Realtime API（GA）形状的实时语音接口：`/v1/realtime/client_secrets` + `/v1/realtime/calls`，另有语音列表、能力发现、文字注入和 WebSocket 音频桥接接口
-- `GET /v1/models` 动态返回 ChatGPT Web 当前实际可用的模型，以及有可用上游目标的兼容别名
+- 提供 GPT-Live 语音会话协议子集：`POST /v1/live/sessions` + `WS /v1/live/sessions`，统一音频、字幕和生命周期事件；旧 `/v1/realtime/*` 保留兼容。接入和能力边界见 [Live API 文档](docs/live-api.md)
+- `GET /v1/models` 文本目录仅保留下述 6 个型号中账号实际可用的模型，每个型号只列出一个规范名称
 - 支持通过 `n` 返回多张生成结果
 - 支持生成可编辑 PPT 文件
 - 支持生成可编辑 PSD 文件
@@ -130,7 +130,7 @@ environment:
 ### 在线画图功能
 
 - 内置在线画图工作台，支持生成、图片编辑与多图组图编辑
-- 支持 `gpt-image-2.5`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`codex-gpt-image-2.5`、`auto`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-6-astra` 模型选择
+- 支持 `gpt-image-2.5`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`codex-gpt-image-2.5`，以及 `gpt-6-pro`、`gpt-5.6-instant`、`gpt-5.6-thinking`、`gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol` 六个文本模型选择
 - 编辑模式支持参考图上传
 - 前端支持多图生成交互
 - 本地保存图片会话历史，支持回看、删除和清空
@@ -183,7 +183,11 @@ Authorization: Bearer <auth-key>
 <summary><code>GET /v1/models</code></summary>
 <br>
 
-返回当前可用的文本与图片模型列表。文本模型来自活动账号的 ChatGPT Web 实时模型目录；兼容别名只会在对应的 Web 模型可用时出现。匿名模型目录不会计入，因为它可能列出匿名对话实际无权调用的模型。
+返回当前可用的文本与图片模型列表。文本模型按每个活动账号分别读取 ChatGPT Web 模型目录，默认缓存 5 分钟；同一订阅档位的账号不共享模型权限。账号替换或移除会使目录缓存失效。临时上游故障最多沿用成功获取后 15 分钟内的目录，401/403 则立即清除该账号的旧目录。文本目录仅列出下述六个规范型号中账号实际可用的部分，不重复展示 `-wm` 或短横线别名；匿名模型目录不计入。目录表示账号获准使用的模型，不保证当前额度和上游可用性。
+
+文本模型白名单固定为 `gpt-6-pro`、`gpt-5.6-instant`、`gpt-5.6-thinking`、`gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`。其他文本型号（包括 `auto`、`chat-latest`、GPT-6 Luna、GPT-5.6 Sol/Terra/Luna Work 和历史搜索模型）不再支持，即使上游仍公布它们也会返回 404。省略 `model` 时使用 `gpt-6.1-sol`；无账号权限时不会自动降级。图片模型目录仍独立管理。
+
+官方 API 模型、ChatGPT Chat 的 Instant 模型和 Work/Codex 模型不能仅凭名称等同。最新官方更新、实现分析和能力边界见 [Chat 协议审计（2026-09-30）](docs/chat-openai-compatibility.md)。
 
 ```bash
 curl http://localhost:8000/v1/models \
@@ -196,7 +200,7 @@ curl http://localhost:8000/v1/models \
 
 | 字段   | 说明                                                                                                         |
 |:-----|:-----------------------------------------------------------------------------------------------------------|
-| 返回模型 | 根据当前活动账号动态汇总；例如 Web 提供 `gpt-5.6-sol-wm` 时，同时提供可桥接别名 `gpt-5.6-sol` |
+| 返回模型 | 三个普通聊天、三个 Work 型号与账号 Web 目录的交集；例如 Web 提供 `gpt-6-1-sol-wm` 时，对外只列出 `gpt-6.1-sol` |
 | 接入场景 | 可接入 Cherry Studio、New API 等上游或客户端                                                                          |
 
 <br>
@@ -314,19 +318,23 @@ curl http://localhost:8000/v1/chat/completions \
 
 | 字段                   | 说明                                                                           |
 |:---------------------|:-----------------------------------------------------------------------------|
-| `model`              | 文本、搜索或图片模型；搜索模型会触发网页搜索兼容逻辑                                                   |
+| `model`              | 六个保留文本型号或图片模型；搜索通过 `tools` / `web_search_options` 启用                                                   |
 | `messages`           | 消息数组，支持文本、搜索和图片请求内容                                                          |
-| `n`                  | 图片生成数量，按当前实现解析为图片数量                                                          |
+| `n`                  | 文本仅支持 `1`；图片请求按图片数量解析                                                          |
 | `stream`             | 文本、搜索和图片场景均支持，仍在测试                                                           |
 | `tools`              | 支持 OpenAI `function` 工具，以及 `web_search` / `web_search_preview` / `web_search_preview_2025_03_11` |
 | `tool_choice`        | 函数工具支持 `auto`、`none`、`required` 和指定函数；Web 搜索工具可由该字段关闭或指定                         |
 | `parallel_tool_calls`| 控制函数桥接是否允许一次返回多个 `tool_calls`                                                       |
 | `web_search_options` | 支持 `search_context_size` 和 approximate `user_location`，并保留多轮上下文                              |
-| `reasoning_effort`   | 支持 `none`、`low`、`medium`、`high`、`xhigh`；自动映射到 Web 当前公布的 `standard` / `extended` 档位          |
+| `reasoning_effort`   | 支持 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`；映射规则及限制见下文          |
 
-文本请求会把 Codex 客户端模型名桥接到语义相同的 Web slug。例如 Web 模型目录包含 `gpt-5.6-sol-wm` 时，`gpt-5.6-sol` 会转发为该模型。桥接只处理点号/短横线和 `-wm` 等命名差异；目标模型不存在时直接返回不可用错误，不会降级到 Sol 或其他模型。Work Mode 返回 `stream_handoff` 时会继续轮询 conversation 结果并转换为普通 Chat Completions 输出。API 响应中的 `model` 仍回显客户端请求值。
+文本请求会把 Codex 客户端模型名桥接到语义相同的 Web slug。例如 Web 模型目录包含 `gpt-6-1-sol-wm` 时，`gpt-6.1-sol` 会转发为该模型；这只是命名示例，是否可用仍由当前账号目录决定。其中三个 Work 型号的上游目标必须带 `-wm`；三个普通聊天型号使用原生 slug：`gpt-6-pro`、`gpt-5-6-instant`、`gpt-5-6-thinking`，不能加 `-wm`。`-wm` 表示 Work Mode，并非 Web 的通用后缀。GPT-6 Pro 与 GPT-6 Astra Work 是独立路由，权限不能互相替代。点号/短横线按账号目录解析，不会凭空拼接未公布的目标；仅有裸名称时不视为可用 Work 模型。目标模型不存在时返回 HTTP 404、`code: "model_not_found"`、`param: "model"`，不会降级到 Sol 或其他模型。Work Mode 返回 `stream_handoff` 时会继续轮询 conversation 结果并转换为普通 Chat Completions 输出。文本 API 响应中的 `model` 返回规范化后的型号，不代表已确认底层权重快照；服务不会通过系统提示强迫模型自称某个型号。
 
-函数工具通过 ChatGPT Web 模型生成调用参数，并按 OpenAI 格式返回 `message.tool_calls` / 流式 `delta.tool_calls` 和 `finish_reason: "tool_calls"`；客户端执行后可把结果作为 `role: "tool"` 消息再次提交，模型会继续生成最终回答。函数由客户端执行，本项目不会代替客户端运行任意函数。Web Search 则由 ChatGPT Web 的原生 `force_use_search` 链路执行，返回最终正文与 URL citations。当前不允许在同一次请求中混用托管 Web Search 和客户端函数工具，以免产生不明确的执行顺序。
+函数工具通过 ChatGPT Web 模型生成调用参数，并按 OpenAI 格式返回 `message.tool_calls` / 流式 `delta.tool_calls` 和 `finish_reason: "tool_calls"`；客户端执行后可把结果作为 `role: "tool"` 消息再次提交，模型会继续生成最终回答。函数由客户端执行，本项目不会代替客户端运行任意函数。Chat/Responses 的 Web Search 则由 ChatGPT Web 的原生 `force_use_search` 链路执行，按请求的 `model` 选择账号并解析 Web slug，返回最终正文与 URL citations。它不再固定转发到 GPT-5.6 Sol；历史 API 搜索模型名已停止支持。当前不允许在同一次请求中混用托管 Web Search 和客户端函数工具，以免产生不明确的执行顺序。
+
+文本及函数工具请求中，Thinking/Work 模型按 `minimal/low` → `min`、`medium` → `standard`、`high` → `extended`、`xhigh/max` → `max` 近似映射，也接受 Web 的原生档位。聊天 GPT-6 Pro 仅接受 `medium/standard`，默认使用 `standard`；Instant 不接受思考档位，两者均不套用全局高强度默认值。不支持的组合返回 400。这些映射不等于官方 API 的计算预算；`none/auto` 不发送强制档位，且不会再套用全局默认值，也不保证上游关闭所有推理。Chat 和 Responses 共用该解析规则，未知值返回 400。搜索链路目前不传递思考档位。
+
+文本 Chat 会拒绝无法兑现的生成控制：`max_tokens/max_completion_tokens`、采样参数、`stop`、JSON/JSON Schema 输出、`strict` 函数 schema、音频输出、非自动 service tier、`store: true` 和未知工具，返回带 `param` 的 OpenAI 400 错误。客户端需要移除这些字段或改用支持它们的后端。`developer` 消息会转成 Web 的 `system` 消息。上述约束不改变图片接口的参数含义。
 
 推理模型会请求 ChatGPT Web 返回其面向用户展示的 `reasoning_recap`，并在非流式响应的 `message.reasoning_content`、流式响应的 `delta.reasoning_content` 中单独返回；普通文本、函数调用和 Web Search 路径均保持该结构。该字段是本项目为常见 Chat Completions 客户端提供的兼容扩展。上游不公开原始 reasoning tokens，因此这里不会返回或伪造隐藏思维链；若 Web 只返回“思考了几秒”等简短 recap，API 也只会如实返回该摘要。
 
@@ -345,7 +353,7 @@ curl http://localhost:8000/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <auth-key>" \
   -d '{
-    "model": "gpt-5.6-sol",
+    "model": "gpt-6-pro",
     "input": "生成一张未来感城市天际线图片",
     "tools": [
       {
@@ -372,10 +380,9 @@ curl http://localhost:8000/v1/responses \
 
 ### 实时语音 API
 
-实时语音接口的形状对齐 [OpenAI Realtime API（GA）](https://developers.openai.com/api/docs/guides/realtime-webrtc)：
-先用项目 API Key 换取短时效 ephemeral key（`ek_...`），再用它交换 WebRTC
-SDP。按这套接口集成后，未来切换到 OpenAI 官方只需要更换 base URL 和 API
-Key（详见下文「与 OpenAI 官方 API 的差异」）。
+**新集成请使用 [GPT-Live 兼容接口](docs/live-api.md)**：WebRTC 和 WebSocket 都使用 `/v1/live/sessions`，模型参数为 `gpt-live-1`，返回标准 Live 事件。调试页已默认使用该路径。底层仍是 ChatGPT Web Voice，声音、上下文和用量存在明确近似，delegation 与自定义音色等能力尚不支持；完整示例、切换官方的步骤和限制见文档。
+
+以下为保留的 **旧 Realtime 接口**。它的信令形状参考 [OpenAI Realtime API](https://developers.openai.com/api/docs/guides/realtime)，但数据通道仍使用 ChatGPT 私有协议；仅更换地址和 Key 不能迁移到官方 GPT-Live。
 
 ```http
 Authorization: Bearer <auth-key>
@@ -420,8 +427,8 @@ curl http://localhost:8000/v1/realtime/voices \
 ```
 
 `/voices` 返回 ChatGPT Web Voice 的原生声音，同时列出映射到它的 OpenAI
-官方声音名（`aliases`）与试听音频地址（`preview_url`）。两套名字在所有
-接口中均可使用：
+官方声音名（`aliases`）与试听音频地址（`preview_url`）。两套名字在旧
+Realtime 接口中均可使用；新 Live 接口只接受官方声音别名：
 
 | 官方声音名 | 上游声音 | 官方声音名 | 上游声音 |
 |:--|:--|:--|:--|

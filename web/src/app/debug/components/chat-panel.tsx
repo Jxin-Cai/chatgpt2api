@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, BrainCircuit, ChevronDown, Download, ImagePlus, LoaderCircle, MessageSquareText, RotateCcw, Send, Sparkles, Square, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,6 +21,26 @@ type SelectedImage = {
   size: number;
   url: string;
 };
+
+const CHAT_MODELS = [
+  "gpt-6-pro", "gpt-5.6-instant", "gpt-5.6-thinking",
+  "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol",
+];
+const DEFAULT_CHAT_MODEL = "gpt-6.1-sol";
+const CHAT_MODEL_LABELS: Record<string, string> = {
+  "gpt-6-pro": "GPT-6 Pro · 聊天",
+  "gpt-5.6-instant": "GPT-5.6 Instant · 聊天",
+  "gpt-5.6-thinking": "GPT-5.6 Thinking · 聊天",
+  "gpt-6.1-sol": "GPT-6.1 Sol · Work",
+  "gpt-6-astra": "GPT-6 Astra · Work",
+  "gpt-6-sol": "GPT-6 Sol · Work",
+};
+
+function modelReasoningEffort(model: string, effort: string): string {
+  if (model === "gpt-5.6-instant") return "";
+  if (model === "gpt-6-pro" && effort !== "medium") return "";
+  return effort;
+}
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_CHAT_INPUT = "你好，先记住我的项目叫 chatgpt2api。";
@@ -218,7 +237,7 @@ function streamSummary(stream: StreamUiState, model: string, error?: string): Ch
 }
 
 export function ChatPanel() {
-  const [model, setModel] = useState("auto");
+  const [model, setModel] = useState(DEFAULT_CHAT_MODEL);
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [input, setInput] = useState(DEFAULT_CHAT_INPUT);
   const [selectedImages, setSelectedImages] = useState<SelectedImage[]>([]);
@@ -380,8 +399,9 @@ export function ChatPanel() {
     const result = readChatSession();
     if (result.status === "restored") {
       setMessages(result.snapshot.messages);
-      setModel(result.snapshot.model || "auto");
-      setReasoningEffort(result.snapshot.reasoningEffort);
+      const restoredModel = CHAT_MODELS.includes(result.snapshot.model) ? result.snapshot.model : DEFAULT_CHAT_MODEL;
+      setModel(restoredModel);
+      setReasoningEffort(modelReasoningEffort(restoredModel, result.snapshot.reasoningEffort));
       setInput(result.snapshot.input);
       setInputEdited(result.snapshot.input !== DEFAULT_CHAT_INPUT);
       setSessionMemoryStatus("restored");
@@ -506,7 +526,7 @@ export function ChatPanel() {
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const startedAt = performance.now();
-    const modelName = model.trim() || "auto";
+    const modelName = model.trim() || DEFAULT_CHAT_MODEL;
     const stream: StreamUiState = {
       ...INITIAL_STREAM_TELEMETRY,
       status: "prepared",
@@ -681,7 +701,7 @@ export function ChatPanel() {
     }
     const cleared = clearChatSession();
     setMessages([]);
-    setModel("auto");
+    setModel(DEFAULT_CHAT_MODEL);
     setReasoningEffort("");
     setSelectedImages([]);
     setRaw(null);
@@ -768,16 +788,19 @@ export function ChatPanel() {
         <div className="min-h-0 flex-1 space-y-5 overflow-auto py-5 pr-1">
           <div className="space-y-2">
             <Label htmlFor="chat-model" className="chat-field-label">Model</Label>
-            <Input
-              id="chat-model"
-              value={model}
-              onChange={(event) => {
-                setModel(event.target.value);
-                setSessionDirty(true);
-              }}
-              disabled={loading}
-              className="h-11 rounded-xl border-white/10 bg-white/[0.055] text-sm text-white shadow-none transition-colors duration-200 placeholder:text-white/25 focus-visible:border-cyan-300/45 focus-visible:ring-cyan-300/20"
-            />
+            <Select value={model} onValueChange={(value) => {
+              setModel(value);
+              setReasoningEffort((effort) => modelReasoningEffort(value, effort));
+              setSessionDirty(true);
+            }} disabled={loading}>
+              <SelectTrigger id="chat-model" className="h-11 w-full rounded-xl border-white/10 bg-white/[0.055] text-sm text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CHAT_MODELS.map((name) => <SelectItem key={name} value={name}>{CHAT_MODEL_LABELS[name]}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-white/42">保留 3 个聊天模型和 3 个 Work 模型，可用性取决于账号权限。</p>
           </div>
 
           <div className="space-y-2">
@@ -785,16 +808,16 @@ export function ChatPanel() {
             <Select value={reasoningEffort || "default"} onValueChange={(value) => {
               setReasoningEffort(value === "default" ? "" : value);
               setSessionDirty(true);
-            }} disabled={loading}>
+            }} disabled={loading || model === "gpt-5.6-instant"}>
               <SelectTrigger id="chat-reasoning-effort" className="h-11 cursor-pointer rounded-xl border-white/10 bg-white/[0.055] text-sm text-white shadow-none transition-colors duration-200 hover:bg-white/[0.09] focus-visible:border-cyan-300/45 focus-visible:ring-cyan-300/20">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="default">默认</SelectItem>
-                <SelectItem value="low">低</SelectItem>
+                {model !== "gpt-6-pro" && <SelectItem value="low">低</SelectItem>}
                 <SelectItem value="medium">中</SelectItem>
-                <SelectItem value="high">高</SelectItem>
-                <SelectItem value="xhigh">超高</SelectItem>
+                {model !== "gpt-6-pro" && <SelectItem value="high">高</SelectItem>}
+                {model !== "gpt-6-pro" && <SelectItem value="xhigh">超高</SelectItem>}
               </SelectContent>
             </Select>
           </div>

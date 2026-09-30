@@ -23,44 +23,44 @@ class StreamUsageTests(unittest.TestCase):
     def test_usage_follows_finish_and_preserves_cached_chunks(self):
         messages = [{"role": "user", "content": "hello"}]
         chunks = [
-            chat.completion_chunk("auto", {"content": "answer"}, completion_id="chatcmpl-test", created=123),
-            chat.completion_chunk("auto", {"reasoning_content": "thinking"}, completion_id="chatcmpl-test", created=123),
-            chat.completion_chunk("auto", {}, "stop", "chatcmpl-test", 123),
+            chat.completion_chunk("gpt-6.1-sol", {"content": "answer"}, completion_id="chatcmpl-test", created=123),
+            chat.completion_chunk("gpt-6.1-sol", {"reasoning_content": "thinking"}, completion_id="chatcmpl-test", created=123),
+            chat.completion_chunk("gpt-6.1-sol", {}, "stop", "chatcmpl-test", 123),
         ]
-        result = list(chat.stream_with_usage(chunks, messages, "auto"))
+        result = list(chat.stream_with_usage(chunks, messages, "gpt-6.1-sol"))
         self.assertTrue(all("usage" not in c for c in chunks))
         self.assertTrue(all(c["usage"] is None for c in result[:-1]))
         self.assertEqual(result[-2]["choices"][0]["finish_reason"], "stop")
         self.assertEqual(result[-1]["choices"], [])
         self.assertEqual({c["id"] for c in result}, {"chatcmpl-test"})
         self.assertEqual({c["created"] for c in result}, {123})
-        expected = chat.completion_response("auto", "answer", messages=messages, reasoning_content="thinking")["usage"]
+        expected = chat.completion_response("gpt-6.1-sol", "answer", messages=messages, reasoning_content="thinking")["usage"]
         self.assertEqual(result[-1]["usage"], expected)
         self.assertGreater(expected["completion_tokens_details"]["reasoning_tokens"], 0)
         self.assertEqual(expected["total_tokens"], expected["prompt_tokens"] + expected["completion_tokens"])
 
     def test_interrupted_stream_has_no_success_usage(self):
         def broken():
-            yield chat.completion_chunk("auto", {"content": "partial"})
+            yield chat.completion_chunk("gpt-6.1-sol", {"content": "partial"})
             raise RuntimeError("upstream failed")
-        stream = chat.stream_with_usage(broken(), [], "auto")
+        stream = chat.stream_with_usage(broken(), [], "gpt-6.1-sol")
         self.assertIsNone(next(stream)["usage"])
         with self.assertRaisesRegex(RuntimeError, "upstream failed"):
             next(stream)
 
     def test_tool_arguments_are_counted(self):
-        chunks = [chat.completion_chunk("auto", {"tool_calls": [
+        chunks = [chat.completion_chunk("gpt-6.1-sol", {"tool_calls": [
             {"index": 0, "function": {"name": "weather", "arguments": '{"city":'}},
             {"index": 0, "function": {"arguments": '"Shanghai"}'}},
         ]}, "tool_calls")]
-        result = list(chat.stream_with_usage(chunks, [{"role": "user", "content": "weather?"}], "auto"))
+        result = list(chat.stream_with_usage(chunks, [{"role": "user", "content": "weather?"}], "gpt-6.1-sol"))
         self.assertGreater(result[-1]["usage"]["completion_tokens"], 0)
 
     def test_handle_usage_opt_in(self):
-        body = {"model": "auto", "messages": [{"role": "user", "content": "hello"}], "stream": True}
+        body = {"model": "gpt-6.1-sol", "messages": [{"role": "user", "content": "hello"}], "stream": True}
         for enabled in (False, True):
             with self.subTest(enabled=enabled), mock.patch.object(chat, "_handle", return_value=iter([
-                chat.completion_chunk("auto", {}, "stop")
+                chat.completion_chunk("gpt-6.1-sol", {}, "stop")
             ])):
                 result = list(chat.handle({**body, "stream_options": {"include_usage": enabled}}))
                 self.assertEqual(len(result), 2 if enabled else 1)

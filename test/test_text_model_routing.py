@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from services.account_service import AccountService
-from services.model_service import ModelRoute, ModelUnavailableError
+from services.model_service import ModelRoute, ModelUnavailableError, model_account_key
 from services.protocol import (
     anthropic_v1_messages,
     conversation,
@@ -45,20 +45,20 @@ class TextAccountRoutingTests(unittest.TestCase):
 
         self.assertEqual(token, "pro")
 
-    def test_auto_model_rotates_only_across_accounts_that_advertise_auto(self) -> None:
+    def test_selected_model_rotates_only_across_eligible_accounts(self) -> None:
         route = ModelRoute(
             account_types=frozenset({"free", "Plus", "Pro"}),
             allow_anonymous=False,
-            upstream_model="auto",
+            upstream_model="gpt-6.1-sol",
         )
         with mock.patch(
             "services.model_service.model_catalog_service.route_for_model",
             return_value=route,
         ):
             tokens = {
-                self.service.get_text_access_token(model="auto"),
-                self.service.get_text_access_token(model="auto"),
-                self.service.get_text_access_token(model="auto"),
+                self.service.get_text_access_token(model="gpt-6.1-sol"),
+                self.service.get_text_access_token(model="gpt-6.1-sol"),
+                self.service.get_text_access_token(model="gpt-6.1-sol"),
             }
 
         self.assertEqual(tokens, {"free", "plus", "pro"})
@@ -83,6 +83,24 @@ class TextAccountRoutingTests(unittest.TestCase):
 
 
 class TextProtocolRoutingTests(unittest.TestCase):
+    def test_account_selector_respects_individual_permissions(self) -> None:
+        route = ModelRoute(
+            account_types=frozenset({"Pro"}),
+            account_keys=frozenset({model_account_key("pro")}),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            service = AccountService(JSONStorageBackend(Path(directory) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "pro-old", "type": "Pro"},
+                {"access_token": "pro", "type": "Pro"},
+            ])
+            service.refresh_access_token = lambda token, **_kwargs: token
+            with mock.patch("services.model_service.model_catalog_service.route_for_model", return_value=route):
+                for _ in range(3):
+                    self.assertEqual(service.get_text_access_token(model="gpt-6.1-sol"), "pro")
+                with self.assertRaises(ModelUnavailableError):
+                    service.get_text_access_token(model="gpt-6.1-sol", excluded_tokens={"pro"})
+
     def test_text_backend_passes_requested_model_to_account_selector(self) -> None:
         backend = mock.Mock()
         with (
@@ -100,7 +118,7 @@ class TextProtocolRoutingTests(unittest.TestCase):
 
     def test_chat_completions_passes_requested_model_to_text_backend(self) -> None:
         body = {
-            "model": "pro-chat",
+            "model": "gpt-6.1-sol",
             "messages": [{"role": "user", "content": "route chat"}],
         }
         with (
@@ -113,62 +131,70 @@ class TextProtocolRoutingTests(unittest.TestCase):
         ):
             openai_v1_chat_complete.handle(body)
 
-        backend.assert_called_once_with("pro-chat")
+        backend.assert_called_once_with("gpt-6.1-sol")
 
     def test_conversation_bridges_codex_client_model_to_web_slug(self) -> None:
         backend = mock.Mock()
         backend.stream_conversation.return_value = iter(())
         with mock.patch(
             "services.model_service.model_catalog_service.resolve_model",
-            return_value="gpt-5.6-sol-wm",
+            return_value="gpt-6-sol-wm",
         ) as resolver:
             list(conversation.conversation_events(
                 backend,
                 messages=[{"role": "user", "content": "hello"}],
-                model="gpt-5.6-sol",
+                model="gpt-6-sol",
             ))
 
-        resolver.assert_called_once_with("gpt-5.6-sol")
+        resolver.assert_called_once_with("gpt-6-sol")
         self.assertEqual(
             backend.stream_conversation.call_args.kwargs["model"],
-            "gpt-5.6-sol-wm",
+            "gpt-6-sol-wm",
         )
         injected = backend.stream_conversation.call_args.kwargs["messages"]
-        self.assertEqual(injected[0]["role"], "system")
-        self.assertIn("GPT-5.6 Sol (gpt-5.6-sol)", injected[0]["content"])
+        self.assertEqual(injected, [{"role": "user", "content": "hello"}])
 
-    def test_conversation_injects_public_name_for_work_mode_slug(self) -> None:
+    def test_conversation_does_not_inject_a_claimed_model_identity(self) -> None:
         backend = mock.Mock()
         backend.stream_conversation.return_value = iter(())
         with mock.patch(
             "services.model_service.model_catalog_service.resolve_model",
-            return_value="gpt-5.6-luna-wm",
+            return_value="gpt-6-sol-wm",
         ):
             list(conversation.conversation_events(
                 backend,
                 messages=[{"role": "user", "content": "你是什么模型"}],
-                model="gpt-5.6-luna-wm",
+                model="gpt-6-sol-wm",
             ))
 
         injected = backend.stream_conversation.call_args.kwargs["messages"]
         self.assertEqual(
             backend.stream_conversation.call_args.kwargs["model"],
-            "gpt-5.6-luna-wm",
+            "gpt-6-sol-wm",
         )
-        self.assertEqual(injected[0]["role"], "system")
-        self.assertIn("GPT-5.6 Luna (gpt-5.6-luna)", injected[0]["content"])
-        self.assertNotIn("currently using GPT-5.6 Sol", injected[0]["content"])
-        self.assertEqual(injected[1]["content"], "你是什么模型")
+        self.assertEqual(injected, [{"role": "user", "content": "你是什么模型"}])
+
+    def test_chat_pro_is_forwarded_without_work_mode_suffix(self) -> None:
+        backend = mock.Mock()
+        backend.stream_conversation.return_value = iter(())
+        with mock.patch(
+            "services.model_service.model_catalog_service.resolve_model", return_value="gpt-6-pro",
+        ) as resolver:
+            list(conversation.conversation_events(
+                backend, messages=[{"role": "user", "content": "hello"}], model="gpt-6-pro",
+            ))
+        resolver.assert_called_once_with("gpt-6-pro")
+        self.assertEqual(backend.stream_conversation.call_args.kwargs["model"], "gpt-6-pro")
 
     def test_responses_passes_requested_model_to_text_backend(self) -> None:
-        body = {"model": "pro-response", "input": "route response"}
+        body = {"model": "gpt-6.1-sol", "input": "route response"}
         with (
             mock.patch.object(openai_v1_response, "text_backend", return_value=object()) as backend,
             mock.patch.object(openai_v1_response, "stream_text_deltas", return_value=iter(["ok"])),
         ):
             openai_v1_response.handle(body)
 
-        backend.assert_called_once_with("pro-response")
+        backend.assert_called_once_with("gpt-6.1-sol")
 
     def test_anthropic_messages_passes_requested_model_to_account_selector(self) -> None:
         with (
@@ -180,12 +206,12 @@ class TextProtocolRoutingTests(unittest.TestCase):
             mock.patch.object(anthropic_v1_messages, "OpenAIBackendAPI"),
         ):
             request = anthropic_v1_messages.message_request({
-                "model": "pro-anthropic",
+                "model": "gpt-6.1-sol",
                 "messages": [{"role": "user", "content": "route anthropic"}],
             })
 
-        self.assertEqual(request.model, "pro-anthropic")
-        selector.assert_called_once_with(model="pro-anthropic")
+        self.assertEqual(request.model, "gpt-6.1-sol")
+        selector.assert_called_once_with(model="gpt-6.1-sol")
 
     def test_invalid_token_retry_keeps_requested_model_filter(self) -> None:
         initial_backend = SimpleNamespace(access_token="bad")

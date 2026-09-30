@@ -49,7 +49,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             return TextCompletionOutput(content=f"cached answer {calls}")
 
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "messages": [{"role": "user", "content": "cache this exact prompt"}],
         }
 
@@ -68,7 +68,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
     def test_cache_key_distinguishes_thinking_effort_inputs(self) -> None:
         messages = [{"role": "user", "content": "same prompt"}]
-        base = {"model": "auto", "messages": messages}
+        base = {"model": "gpt-6.1-sol", "messages": messages}
 
         default_key = cache_key(base, messages, stream=False)
         thinking_key = cache_key({**base, "thinking_effort": "high"}, messages, stream=False)
@@ -86,7 +86,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             return TextCompletionOutput(content="ok")
 
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "reasoning_effort": "xhigh",
             "messages": [{"role": "user", "content": "use more reasoning"}],
         }
@@ -97,7 +97,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
         ):
             openai_v1_chat_complete.handle(body)
 
-        self.assertEqual(captured_efforts, ["extended"])
+        self.assertEqual(captured_efforts, ["max"])
 
     def test_null_thinking_effort_does_not_mask_reasoning_effort(self) -> None:
         self.assertEqual(
@@ -116,7 +116,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             yield "ok"
 
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "input": "use more reasoning",
             "reasoning": {"effort": "xhigh"},
         }
@@ -127,7 +127,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
         ):
             openai_v1_response.handle(body)
 
-        self.assertEqual(captured_efforts, ["extended"])
+        self.assertEqual(captured_efforts, ["max"])
 
     def test_repeated_stream_text_completion_replays_cached_chunks(self) -> None:
         calls = 0
@@ -139,7 +139,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             yield "content", " answer"
 
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "stream": True,
             "messages": [{"role": "user", "content": "stream cache this exact prompt"}],
         }
@@ -167,7 +167,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             return TextCompletionOutput(content="ok")
 
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "messages": [
                 {"role": "user", "content": "repeat me"},
                 {"role": "user", "content": "repeat me"},
@@ -200,7 +200,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             ),
         ):
             response = openai_v1_chat_complete.handle({
-                "model": "auto",
+                "model": "gpt-6.1-sol",
                 "messages": [{"role": "user", "content": "usage shape"}],
             })
 
@@ -215,7 +215,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             mock.patch("services.protocol.openai_v1_response.stream_text_deltas", return_value=iter(["ok"])),
         ):
             response = openai_v1_response.handle({
-                "model": "auto",
+                "model": "gpt-6.1-sol",
                 "input": "usage shape",
             })
 
@@ -233,7 +233,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             yield f"response cache {calls}"
 
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "input": "cache this responses prompt",
             "stream": True,
         }
@@ -411,12 +411,12 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
     def test_responses_tools_add_honest_no_tool_guard(self) -> None:
         model, messages = openai_v1_response.text_response_parts({
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "input": "run echo hi",
             "tools": [{"type": "function", "name": "shell"}],
         })
 
-        self.assertEqual(model, "auto")
+        self.assertEqual(model, "gpt-6.1-sol")
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("cannot execute local tools", str(messages[0]["content"]))
 
@@ -426,7 +426,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             "sources": [{"title": "Example", "url": "https://example.com/news", "snippet": "Snippet"}],
         }
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "input": "latest example news",
             "tools": [{"type": "web_search"}],
         }
@@ -434,7 +434,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
         with mock.patch("services.protocol.openai_v1_response.run_web_search", return_value=search_result) as search:
             response = openai_v1_response.handle(body)
 
-        search.assert_called_once_with("latest example news")
+        search.assert_called_once_with("latest example news", model="gpt-6.1-sol")
         self.assertEqual(response["output"][0]["type"], "web_search_call")
         self.assertEqual(response["output"][0]["status"], "completed")
         self.assertEqual(response["output"][0]["action"]["query"], "latest example news")
@@ -451,7 +451,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             "sources": [{"title": "Example", "url": "https://example.com/stream", "snippet": ""}],
         }
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "stream": True,
             "input": "stream search",
             "tools": [{"type": "web_search_preview"}],
@@ -474,7 +474,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             "sources": [{"title": "Example", "url": "https://example.com/versioned", "snippet": ""}],
         }
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "input": "versioned search",
             "tools": [{"type": "web_search_preview_2025_03_11"}],
         }
@@ -482,7 +482,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
         with mock.patch("services.protocol.openai_v1_response.run_web_search", return_value=search_result) as search:
             response = openai_v1_response.handle(body)
 
-        search.assert_called_once_with("versioned search")
+        search.assert_called_once_with("versioned search", model="gpt-6.1-sol")
         self.assertEqual(response["output"][0]["type"], "web_search_call")
         self.assertIn("Versioned search answer.", response["output"][1]["content"][0]["text"])
 
@@ -493,7 +493,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             "sources": [{"title": "Example", "url": "https://example.com/chat", "snippet": ""}],
         }
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "messages": [{"role": "user", "content": "search chat"}],
             "tools": [{"type": "web_search"}],
         }
@@ -501,7 +501,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
         with mock.patch("services.protocol.openai_v1_chat_complete.run_web_search", return_value=search_result) as search:
             response = openai_v1_chat_complete.handle(body)
 
-        search.assert_called_once_with("search chat")
+        search.assert_called_once_with("search chat", model="gpt-6.1-sol")
         message = response["choices"][0]["message"]
         self.assertIn("Chat search answer.", message["content"])
         self.assertEqual(message["reasoning_content"], "检索了来源")
@@ -514,7 +514,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             "sources": [{"title": "Example", "url": "https://example.com/options", "snippet": ""}],
         }
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "messages": [{"role": "user", "content": "search options"}],
             "web_search_options": {"search_context_size": "low"},
         }
@@ -524,45 +524,21 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         search.assert_called_once_with(
             "Search preferences:\n- search context size: low\n\n"
-            "Current user request:\nsearch options"
+            "Current user request:\nsearch options", model="gpt-6.1-sol"
         )
         self.assertIn("Options search answer.", response["choices"][0]["message"]["content"])
 
-    def test_chat_completions_search_model_triggers_search(self) -> None:
-        search_result = {
-            "answer": "Search model answer.",
-            "sources": [{"title": "Example", "url": "https://example.com/model", "snippet": ""}],
-        }
-        body = {
-            "model": "gpt-5-search-api-2026-06-01",
-            "messages": [{"role": "user", "content": "search model"}],
-        }
-
-        with mock.patch("services.protocol.openai_v1_chat_complete.run_web_search", return_value=search_result) as search:
-            response = openai_v1_chat_complete.handle(body)
-
-        search.assert_called_once_with("search model")
-        self.assertEqual(response["model"], "gpt-5-search-api-2026-06-01")
-        self.assertIn("Search model answer.", response["choices"][0]["message"]["content"])
-
-    def test_chat_completions_search_like_model_does_not_trigger_search(self) -> None:
-        body = {
-            "model": "gpt-5-search-apiary",
-            "messages": [{"role": "user", "content": "not actually a search model"}],
-        }
-
-        with (
-            mock.patch("services.protocol.openai_v1_chat_complete.run_web_search") as search,
-            mock.patch("services.protocol.openai_v1_chat_complete.text_backend", return_value=object()),
-            mock.patch(
-                "services.protocol.openai_v1_chat_complete.collect_text_output",
-                return_value=TextCompletionOutput(content="plain text answer"),
-            ),
-        ):
-            response = openai_v1_chat_complete.handle(body)
-
-        search.assert_not_called()
-        self.assertIn("plain text answer", response["choices"][0]["message"]["content"])
+    def test_old_search_model_names_are_rejected_before_search(self) -> None:
+        from services.model_service import ModelUnavailableError
+        for model in ("gpt-5-search-api-2026-06-01", "gpt-5-search-apiary"):
+            with self.subTest(model=model), mock.patch("services.protocol.openai_v1_chat_complete.run_web_search") as search:
+                with self.assertRaises(ModelUnavailableError):
+                    openai_v1_chat_complete.handle({
+                        "model": model,
+                        "messages": [{"role": "user", "content": "search model"}],
+                        "tools": [{"type": "web_search"}],
+                    })
+                search.assert_not_called()
 
     def test_chat_completions_accepts_remote_image_url(self) -> None:
         class FakeImageResponse:
@@ -572,7 +548,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         with mock.patch("utils.helper.requests.get", return_value=FakeImageResponse()) as request_get:
             model, messages = openai_v1_chat_complete.text_chat_parts({
-                "model": "auto",
+                "model": "gpt-6.1-sol",
                 "messages": [{
                     "role": "user",
                     "content": [
@@ -583,7 +559,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             })
 
         request_get.assert_called_once()
-        self.assertEqual(model, "auto")
+        self.assertEqual(model, "gpt-6.1-sol")
         content = messages[0]["content"]
         self.assertEqual(content[0], {"type": "text", "text": "Describe this"})
         self.assertEqual(content[1]["type"], "image")
@@ -598,7 +574,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
             yield "red"
 
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "input": [
                 {"type": "input_text", "text": "What color is this image?"},
                 {"type": "input_image", "image_url": PNG_1X1_DATA_URL},
@@ -627,7 +603,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         with mock.patch("utils.helper.requests.get", return_value=FakeImageResponse()) as request_get:
             _model, messages = openai_v1_response.text_response_parts({
-                "model": "auto",
+                "model": "gpt-6.1-sol",
                 "input": [{
                     "type": "message",
                     "role": "user",

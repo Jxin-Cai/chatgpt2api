@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from utils.text_models import DEFAULT_TEXT_MODEL
+
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
@@ -38,8 +40,8 @@ class ChatCompletionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str | None = None
     prompt: str | None = None
-    n: int | None = None
-    stream: bool | None = None
+    n: int | None = Field(default=None, strict=True)
+    stream: bool | None = Field(default=None, strict=True)
     modalities: list[str] | None = None
     messages: list[dict[str, object]] | None = None
     tools: list[dict[str, object]] | None = None
@@ -134,7 +136,7 @@ def create_router() -> APIRouter:
     async def create_chat_completion(body: ChatCompletionRequest, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
         payload = body.model_dump(mode="python")
-        model = str(payload.get("model") or "auto")
+        model = str(payload.get("model") or DEFAULT_TEXT_MODEL)
         request_preview = request_text(payload.get("prompt"), payload.get("messages"))
         call = LoggedCall(
             identity,
@@ -151,7 +153,7 @@ def create_router() -> APIRouter:
     async def create_response(body: ResponseCreateRequest, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
         payload = body.model_dump(mode="python")
-        model = str(payload.get("model") or "auto")
+        model = str(payload.get("model") or DEFAULT_TEXT_MODEL)
         request_preview = request_text(payload.get("input"), payload.get("instructions"))
         call = LoggedCall(
             identity,
@@ -173,7 +175,7 @@ def create_router() -> APIRouter:
     ):
         identity = require_identity(authorization or (f"Bearer {x_api_key}" if x_api_key else None))
         payload = body.model_dump(mode="python")
-        model = str(payload.get("model") or "auto")
+        model = str(payload.get("model") or DEFAULT_TEXT_MODEL)
         request_preview = request_text(payload.get("system"), payload.get("messages"), payload.get("tools"))
         call = LoggedCall(identity, "/v1/messages", model, "Messages", request_text=request_preview)
         await filter_or_log(call, request_preview)

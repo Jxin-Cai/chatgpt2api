@@ -202,8 +202,11 @@ def _image_error_response(exc: Exception) -> JSONResponse:
 
 def _protocol_error_response(exc: Exception, status_code: int, sse: str) -> JSONResponse:
     message = str(exc)
+    status_code = int(getattr(exc, "status_code", status_code))
     if sse == "anthropic":
         return anthropic_error_response(message, status_code)
+    if hasattr(exc, "to_openai_error"):
+        return openai_error_response(exc.to_openai_error(), status_code)
     return openai_error_response(message, status_code)
 
 

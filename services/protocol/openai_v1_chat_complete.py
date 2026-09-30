@@ -5,8 +5,16 @@ import uuid
 from typing import Any, Callable, Iterable, Iterator
 
 from fastapi import HTTPException
+from services.model_service import require_supported_text_model
 
 from services.protocol.chat_completion_cache import cache_key, chat_completion_cache, normalize_text_messages
+from services.protocol.chat_request import (
+    invalid_parameter,
+    normalize_thinking_effort,
+    thinking_effort_from_body,
+    validate_generation_controls,
+    validate_messages,
+)
 from services.protocol.conversation import (
     ConversationRequest,
     ImageOutput,
@@ -55,34 +63,7 @@ from utils.image_tokens import (
     image_usage,
 )
 
-TOOL_UNAVAILABLE_SYSTEM_MESSAGE = (
-    "This compatibility backend cannot execute unknown built-in tools, shell commands, "
-    "or file operations. Do not claim to have run tools or inspected external resources. "
-    "If a user asks you to use a tool, say that tool execution is unavailable through this backend."
-)
 SUPPORTED_CHAT_TOOL_TYPES = WEB_SEARCH_TOOL_TYPES | {FUNCTION_TOOL_TYPE}
-
-
-def normalize_thinking_effort(value: object) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"", "none", "auto"}:
-        return ""
-    if normalized in {"minimal", "low", "medium", "high", "standard"}:
-        return normalized
-    if normalized in {"xhigh", "extended", "max"}:
-        return "extended"
-    return ""
-
-
-def thinking_effort_from_body(body: dict[str, Any]) -> str:
-    if body.get("thinking_effort") is not None:
-        return normalize_thinking_effort(body.get("thinking_effort"))
-    if body.get("reasoning_effort") is not None:
-        return normalize_thinking_effort(body.get("reasoning_effort"))
-    reasoning = body.get("reasoning")
-    if isinstance(reasoning, dict):
-        return normalize_thinking_effort(reasoning.get("effort"))
-    return ""
 
 
 def completion_chunk(model: str, delta: dict[str, Any], finish_reason: str | None = None, completion_id: str = "", created: int | None = None) -> dict[str, Any]:
@@ -213,8 +194,11 @@ def collect_chat_content(chunks: Iterable[dict[str, Any]]) -> str:
 
 def chat_messages_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
     messages = body.get("messages")
-    if isinstance(messages, list) and messages:
-        return [message for message in messages if isinstance(message, dict)]
+    if messages is not None:
+        if not isinstance(messages, list) or not messages:
+            invalid_parameter("messages", "messages must be a non-empty array")
+        validate_messages(messages)
+        return messages
     prompt = str(body.get("prompt") or "").strip()
     if prompt:
         return [{"role": "user", "content": prompt}]
@@ -234,7 +218,14 @@ def chat_image_args(body: dict[str, Any]) -> tuple[str, str, int, list[tuple[byt
 
 
 def text_chat_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
-    model = str(body.get("model") or "auto").strip() or "auto"
+    validate_generation_controls(body)
+    thinking_effort_from_body(body)
+    tools = body.get("tools")
+    if tools is not None and (
+        not isinstance(tools, list) or any(not isinstance(tool, dict) for tool in tools)
+    ):
+        invalid_parameter("tools", "tools must be an array of objects")
+    model = require_supported_text_model(body.get("model"))
     raw_messages = preprocess_function_tool_messages(chat_messages_from_body(body))
     messages = normalize_text_messages(normalize_messages(raw_messages))
     try:
@@ -244,7 +235,11 @@ def text_chat_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     if function_prompt:
         messages.insert(0, {"role": "system", "content": function_prompt})
     if has_unsupported_tools(body, SUPPORTED_CHAT_TOOL_TYPES):
-        messages.insert(0, {"role": "system", "content": TOOL_UNAVAILABLE_SYSTEM_MESSAGE})
+        invalid_parameter("tools", "only function and web_search tools are supported", unsupported=True)
+    for index, tool in enumerate(body.get("tools") or []):
+        function = tool.get("function")
+        if isinstance(function, dict) and function.get("strict"):
+            invalid_parameter(f"tools[{index}].function.strict", "strict function schemas cannot be enforced by the Web tool bridge", unsupported=True)
     return model, messages
 
 
@@ -272,7 +267,7 @@ def _web_search_result(
     query = search_prompt_from_messages(messages, web_search_options(body))
     if not query:
         raise HTTPException(status_code=400, detail={"error": "messages or prompt is required for web search"})
-    result = run_web_search(query)
+    result = run_web_search(query, model=require_supported_text_model(body.get("model")))
     text, annotations = text_with_url_citations(result)
     return text, annotations, str(result.get("reasoning_content") or "")
 
@@ -558,12 +553,16 @@ def text_chat_response(
 
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
+    if body.get("stream") is not None and not isinstance(body["stream"], bool):
+        invalid_parameter("stream", "stream must be a boolean")
     options = body.get("stream_options")
     if options is not None and (
         not isinstance(options, dict)
         or ("include_usage" in options and not isinstance(options["include_usage"], bool))
     ):
-        raise HTTPException(status_code=400, detail={"error": "stream_options.include_usage must be a boolean"})
+        invalid_parameter("stream_options.include_usage", "stream_options.include_usage must be a boolean")
+    if options is not None and not body.get("stream"):
+        invalid_parameter("stream_options", "stream_options requires stream=true")
     if body.get("stream") and options and options.get("include_usage") and not is_image_chat_request(body):
         model, messages = text_chat_parts(body)
         result = _handle(body, prepared_text=(model, messages))

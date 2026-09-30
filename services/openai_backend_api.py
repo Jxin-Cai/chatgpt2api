@@ -36,6 +36,7 @@ from utils.helper import (
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
 from utils.turnstile import solve_turnstile_token
+from utils.text_models import web_thinking_effort
 
 
 class InvalidAccessTokenError(RuntimeError):
@@ -455,6 +456,8 @@ class OpenAIBackendAPI:
         conversation_messages = []
         for item in messages:
             role = item.get("role", "user")
+            if role == "developer":
+                role = "system"
             content = item.get("content", "")
             if isinstance(content, str):
                 conversation_messages.append({
@@ -524,17 +527,7 @@ class OpenAIBackendAPI:
 
     @staticmethod
     def _normalize_thinking_effort(value: str) -> str:
-        normalized = str(value or "").strip().lower()
-        if normalized in {"", "none", "auto"}:
-            return ""
-        if normalized in {"minimal", "low", "medium", "standard"}:
-            return "standard"
-        if normalized in {"high", "xhigh", "extended", "max"}:
-            # The authenticated Web model catalog currently advertises only
-            # standard and extended, even though the public API uses a finer
-            # reasoning_effort scale.
-            return "extended"
-        return ""
+        return web_thinking_effort(value)
 
     def _conversation_payload(
             self,
@@ -577,7 +570,19 @@ class OpenAIBackendAPI:
                 "screen_width": 2560,
             },
         }
-        normalized_effort = self._normalize_thinking_effort(thinking_effort or config.default_thinking_effort)
+        # Chat Pro/Instant have different controls from Work models. Do not
+        # apply a global extended/max default to either Chat route.
+        default_effort = config.default_thinking_effort
+        if model == "gpt-6-pro":
+            default_effort = "standard"
+        elif model in {"gpt-5-6-instant", "gpt-5.6-instant"}:
+            default_effort = "none"
+        normalized_effort = self._normalize_thinking_effort(thinking_effort or default_effort)
+        if normalized_effort and (
+            (model == "gpt-6-pro" and normalized_effort != "standard")
+            or model in {"gpt-5-6-instant", "gpt-5.6-instant"}
+        ):
+            raise ValueError(f"thinking effort is not supported by {model}")
         if normalized_effort:
             payload["thinking_effort"] = normalized_effort
         return payload
@@ -3003,6 +3008,8 @@ class OpenAIBackendAPI:
                 "permission": [],
                 "root": slug,
                 "parent": None,
+                **({"is_work_mode_model": item["is_work_mode_model"]} if isinstance(item.get("is_work_mode_model"), bool) else {}),
+                "display_name": str(item.get("title") or slug),
             })
         data.sort(key=lambda item: item["id"])
         return {"object": "list", "data": data}

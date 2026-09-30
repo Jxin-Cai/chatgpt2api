@@ -130,6 +130,7 @@ class RealtimeSignalingGuard:
         self._lock = threading.Lock()
         self._rate_events: dict[str, deque[float]] = {}
         self._attempts: dict[str, _AttemptChain] = {}
+        self._calls: dict[str, _PinnedSession] = {}
         self._pinned_sessions: dict[str, _PinnedSession] = {}
         self._client_secrets: dict[str, _ClientSecret] = {}
         self._quota_cooldowns: dict[str, float] = {}
@@ -158,6 +159,8 @@ class RealtimeSignalingGuard:
             expired = [key for key, value in self._attempts.items() if value.expires_at <= now]
             for key in expired:
                 self._attempts.pop(key, None)
+            for key in [key for key, call in self._calls.items() if call.expires_at <= now]:
+                self._calls.pop(key, None)
             expired_sessions = [
                 key for key, value in self._pinned_sessions.items()
                 if value.expires_at <= now
@@ -186,6 +189,11 @@ class RealtimeSignalingGuard:
             if chain is not None:
                 chain.excluded_tokens.add(access_token)
                 chain.last_token = access_token
+                self._calls[attempt_id] = _PinnedSession(
+                    identity_key=chain.identity_key,
+                    access_token=access_token,
+                    expires_at=time.monotonic() + self.session_ttl_seconds,
+                )
 
     def mark_quota_exhausted(
         self,
@@ -195,18 +203,18 @@ class RealtimeSignalingGuard:
     ) -> str | None:
         now = time.monotonic()
         with self._lock:
-            chain = self._attempts.get(attempt_id)
+            chain = self._calls.get(attempt_id)
             if (
                 chain is None
                 or chain.identity_key != identity_key
                 or chain.expires_at <= now
-                or not chain.last_token
+                or not chain.access_token
             ):
                 return None
-            self._quota_cooldowns[chain.last_token] = now + (
+            self._quota_cooldowns[chain.access_token] = now + (
                 cooldown_seconds or self.quota_cooldown_seconds
             )
-            return chain.last_token
+            return chain.access_token
 
     def get_attempt_token(self, identity_key: str, attempt_id: str) -> str | None:
         """Return the access_token associated with an active attempt, or None."""

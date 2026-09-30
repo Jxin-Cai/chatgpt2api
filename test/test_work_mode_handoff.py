@@ -160,11 +160,11 @@ class WorkModeHandoffTests(unittest.TestCase):
         self.assertEqual(events[0]["message"]["content"]["parts"], ["NEW"])
 
     def test_web_reasoning_effort_is_mapped_to_advertised_values(self) -> None:
-        self.assertEqual(self.backend._normalize_thinking_effort("low"), "standard")
+        self.assertEqual(self.backend._normalize_thinking_effort("low"), "min")
         self.assertEqual(self.backend._normalize_thinking_effort("medium"), "standard")
         self.assertEqual(self.backend._normalize_thinking_effort("high"), "extended")
-        self.assertEqual(self.backend._normalize_thinking_effort("xhigh"), "extended")
-        self.assertEqual(self.backend._normalize_thinking_effort("max"), "extended")
+        self.assertEqual(self.backend._normalize_thinking_effort("xhigh"), "max")
+        self.assertEqual(self.backend._normalize_thinking_effort("max"), "max")
 
     def test_conversation_payload_requests_visible_reasoning_recap(self) -> None:
         payload = self.backend._conversation_payload(

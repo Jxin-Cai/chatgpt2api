@@ -7,10 +7,9 @@ import {
 } from "@/lib/realtime-webrtc";
 
 const SAMPLE_RATE = 48_000;
-const CAPTURE_CHUNK_SAMPLES = 1_920; // 40ms
-const PLAYOUT_LEAD_SECONDS = 0.6;
-const PLAYOUT_MAX_LEAD_SECONDS = 1.2;
-const CONNECTION_TIMEOUT_MS = 35_000;
+const PLAYOUT_LEAD_SECONDS = 0.18;
+const PLAYOUT_MAX_LEAD_SECONDS = 0.6;
+const CONNECTION_TIMEOUT_MS = 60_000;
 
 class LinearPcmResampler {
   private leftover = new Float32Array(0);
@@ -155,21 +154,29 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
   private activeSources = new Set<AudioBufferSourceNode>();
   private fallbackScheduler: BufferSourceScheduler | null = null;
   private playbackResampler: LinearPcmResampler | null = null;
+  private captureResampler: LinearPcmResampler | null = null;
+  private playbackIdleTimer: number | null = null;
   private microphoneEnabled = true;
   private connected = false;
   private closed = true;
 
-  constructor(private readonly handlers: RealtimeConnectionHandlers) {}
+  constructor(
+    private readonly handlers: RealtimeConnectionHandlers,
+    private readonly protocol: "realtime" | "live" = "realtime",
+  ) {}
+
+  private get sampleRate(): number { return this.protocol === "live" ? 24_000 : SAMPLE_RATE; }
 
   async connect(options: ConnectOptions): Promise<RealtimeConnectionResult> {
     this.close();
     this.closed = false;
+    this.microphoneEnabled = options.microphoneEnabled !== false;
     this.handlers.onConnectionState("connecting");
 
     const microphone = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
-        sampleRate: SAMPLE_RATE,
+        sampleRate: this.sampleRate,
         echoCancellation: true,
         noiseSuppression: false,
         autoGainControl: true,
@@ -180,16 +187,26 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
       throw new Error("连接已取消");
     }
     this.microphone = microphone;
+    microphone.getAudioTracks().forEach(track => { track.enabled = this.microphoneEnabled; });
     this.bindMicrophoneState(microphone);
     await this.setupAudioGraph(microphone);
 
     const token = options.authorization.replace(/^Bearer\s+/i, "").trim();
     if (!token) throw new Error("实时中继缺少认证信息");
     const socket = new WebSocket(
-      websocketUrl(options.baseUrl, options.voice),
+      this.protocol === "live"
+        ? websocketUrl(options.baseUrl, options.voice).replace(/\/v1\/realtime\?.*$/, "/v1/live/sessions")
+        : websocketUrl(options.baseUrl, options.voice),
       [`openai-insecure-api-key.${token}`],
     );
     this.socket = socket;
+    socket.onopen = () => {
+      if (this.protocol !== "live") return;
+      this.send({ type: "session.start", session: {
+        model: "gpt-live-1", audio: { format: { type: "audio/pcm", rate: this.sampleRate }, output: { voice: options.voice } },
+        ...(options.initialHistory?.length ? { input: options.initialHistory } : {}),
+      }});
+    };
 
     return await new Promise<RealtimeConnectionResult>((resolve, reject) => {
       let settled = false;
@@ -221,7 +238,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         } catch {
           return;
         }
-        if (event.type === "response.audio.delta" && typeof event.delta === "string") {
+        if ((event.type === "response.audio.delta" || event.type === "session.output_audio.delta") && typeof event.delta === "string") {
           this.scheduleAudio(event.delta);
           return;
         }
@@ -232,16 +249,18 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         }
         if (event.type === "input_audio_buffer.speech_started") this.stopScheduledAudio();
         this.handlers.onEvent(event);
-        if (event.type === "session.created") {
+        if (event.type === "session.closed") {
+          this.connected = false;
+          this.handlers.onConnectionState("disconnected");
+          return;
+        }
+        if (event.type === (this.protocol === "live" ? "session.started" : "session.created")) {
           this.connected = true;
           this.handlers.onConnectionState("connected");
           this.handlers.onQuality?.({
-            roundTripTimeMs: 0,
-            jitterMs: 0,
-            packetLossPercent: 0,
-            concealedSamplePercent: 0,
             candidateType: "relay",
           });
+          if (this.protocol === "live" && !this.microphoneEnabled) this.send({ type: "session.input_audio.mute" });
           const session = event.session as { id?: string } | undefined;
           finish({
             location: session?.id || "/v1/realtime",
@@ -277,6 +296,10 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     if (!text.trim()) throw new Error("文字消息不能为空");
     if (this.socket?.readyState !== WebSocket.OPEN) throw new Error("实时事件通道未连接");
     const messageId = crypto.randomUUID();
+    if (this.protocol === "live") {
+      this.send({ type: "session.instructions.append", event_id: messageId, delegation_id: null, content: text });
+      return messageId;
+    }
     this.send({
       type: "relay_message",
       payload: {
@@ -299,7 +322,8 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     this.microphone?.getAudioTracks().forEach((track) => {
       track.enabled = enabled;
     });
-    if (!enabled) this.send({ type: "input_audio_buffer.clear" });
+    if (this.protocol === "live") this.send({ type: enabled ? "session.input_audio.unmute" : "session.input_audio.mute" });
+    else if (!enabled) this.send({ type: "input_audio_buffer.clear" });
   }
 
   getMicrophoneStream(): MediaStream | null {
@@ -315,7 +339,18 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     this.connected = false;
     const socket = this.socket;
     this.socket = null;
-    if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "client closed");
+    if (socket?.readyState === WebSocket.OPEN && this.protocol === "live") {
+      socket.onmessage = (message) => {
+        try {
+          if (JSON.parse(message.data).type === "session.closed") {
+            window.clearTimeout(timeout);
+            socket.close(1000, "session finalized");
+          }
+        } catch { /* Ignore malformed terminal events. */ }
+      };
+      const timeout = window.setTimeout(() => socket.close(1000, "close timeout"), 3000);
+      socket.send(JSON.stringify({ type: "session.close" }));
+    } else if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "client closed");
     this.stopScheduledAudio();
     this.micSource?.disconnect();
     this.captureNode?.disconnect();
@@ -352,7 +387,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
   }
 
   private async setupAudioGraph(stream: MediaStream): Promise<void> {
-    const context = new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: "playback" });
+    const context = new AudioContext({ sampleRate: this.sampleRate, latencyHint: "interactive" });
     this.audioContext = context;
     await context.resume();
 
@@ -372,7 +407,8 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     sink.connect(context.destination);
     this.captureSink = sink;
 
-    this.playbackResampler = new LinearPcmResampler(SAMPLE_RATE, context.sampleRate);
+    this.playbackResampler = new LinearPcmResampler(this.sampleRate, context.sampleRate);
+    this.captureResampler = new LinearPcmResampler(context.sampleRate, this.sampleRate);
     this.fallbackScheduler = new BufferSourceScheduler(
       context,
       playbackGain,
@@ -385,7 +421,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         class RealtimePcmCapture extends AudioWorkletProcessor {
           constructor() {
             super();
-            this.pending = new Float32Array(${CAPTURE_CHUNK_SAMPLES});
+            this.pending = new Float32Array(${Math.round(context.sampleRate * 0.02)});
             this.offset = 0;
           }
           process(inputs) {
@@ -404,7 +440,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
                   pcm[i] = sample < 0 ? sample * 32768 : sample * 32767;
                 }
                 this.port.postMessage(pcm.buffer, [pcm.buffer]);
-                this.pending = new Float32Array(${CAPTURE_CHUNK_SAMPLES});
+                this.pending = new Float32Array(${Math.round(context.sampleRate * 0.02)});
                 this.offset = 0;
               }
             }
@@ -524,7 +560,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         numberOfOutputs: 1,
         outputChannelCount: [1],
         processorOptions: {
-          ringSamples: Math.max(context.sampleRate * 5, 240_000),
+          ringSamples: context.sampleRate * 2,
           prefillSamples: Math.round(context.sampleRate * PLAYOUT_LEAD_SECONDS),
           maxPrefillSamples: Math.round(context.sampleRate * PLAYOUT_MAX_LEAD_SECONDS),
         },
@@ -555,8 +591,17 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
   }
 
   private sendPcm(buffer: ArrayBuffer): void {
-    if (!this.microphoneEnabled || this.socket?.readyState !== WebSocket.OPEN) return;
-    this.send({ type: "input_audio_buffer.append", audio: bytesToBase64(buffer) });
+    if (!this.connected || !this.microphoneEnabled || this.socket?.readyState !== WebSocket.OPEN) return;
+    if (this.socket.bufferedAmount > 64_000) {
+      this.handlers.onEvent({ type: "error", error: { message: "音频发送拥塞，请重连" } });
+      this.socket.close(1013, "audio congestion");
+      return;
+    }
+    const samples = this.captureResampler?.push(new Int16Array(buffer));
+    if (!samples?.length) return;
+    const pcm = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i += 1) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768)));
+    this.send({ type: this.protocol === "live" ? "session.input_audio.append" : "input_audio_buffer.append", audio: bytesToBase64(pcm.buffer) });
   }
 
   private send(event: RealtimeEvent): void {
@@ -575,6 +620,11 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     const samples = resampler.push(pcm);
     if (!samples.length) return;
 
+    if (this.protocol === "live") {
+      if (this.playbackIdleTimer !== null) window.clearTimeout(this.playbackIdleTimer);
+      // Local playback flush, not a server turn-completion signal.
+      this.playbackIdleTimer = window.setTimeout(() => this.endScheduledAudio(), 200);
+    }
     if (this.playbackNode) {
       this.playbackNode.port.postMessage(samples, [samples.buffer]);
       return;
@@ -588,6 +638,8 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
   }
 
   private stopScheduledAudio(): void {
+    if (this.playbackIdleTimer !== null) window.clearTimeout(this.playbackIdleTimer);
+    this.playbackIdleTimer = null;
     this.playbackNode?.port.postMessage({ type: "stop" });
     this.fallbackScheduler?.stop();
     this.playbackResampler?.reset();

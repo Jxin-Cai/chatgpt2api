@@ -63,6 +63,12 @@ def build_function_tool_prompt(body: dict[str, Any]) -> str:
     if len(tools) != len(declared_tools):
         raise ValueError("each function tool requires function.name")
     choice = body.get("tool_choice", "auto")
+    if choice is not None and not isinstance(choice, (str, dict)):
+        raise ValueError("tool_choice must be a string or a function choice object")
+    if isinstance(choice, dict) and not _function_name_from_choice(choice):
+        from services.protocol.web_search_tool import WEB_SEARCH_TOOL_TYPES
+        if choice.get("type") not in WEB_SEARCH_TOOL_TYPES:
+            raise ValueError("tool_choice must identify a function name")
     if isinstance(choice, str) and choice not in {"auto", "none", "required"}:
         raise ValueError(f"unsupported tool_choice {choice!r}")
     forced_name = _function_name_from_choice(choice)

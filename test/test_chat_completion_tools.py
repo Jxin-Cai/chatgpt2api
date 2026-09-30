@@ -30,7 +30,7 @@ WEATHER_TOOL = {
 class ChatCompletionFunctionToolTests(unittest.TestCase):
     def test_non_stream_returns_standard_tool_calls(self) -> None:
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "messages": [{"role": "user", "content": "上海天气如何？"}],
             "tools": [WEATHER_TOOL],
             "tool_choice": "required",
@@ -63,7 +63,7 @@ class ChatCompletionFunctionToolTests(unittest.TestCase):
 
     def test_stream_returns_delta_tool_calls_and_tool_finish_reason(self) -> None:
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "stream": True,
             "messages": [{"role": "user", "content": "上海天气如何？"}],
             "tools": [WEATHER_TOOL],
@@ -91,7 +91,7 @@ class ChatCompletionFunctionToolTests(unittest.TestCase):
 
     def test_json_envelope_is_also_accepted_without_leaking_as_content(self) -> None:
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "messages": [{"role": "user", "content": "weather"}],
             "tools": [WEATHER_TOOL],
         }
@@ -134,7 +134,7 @@ class ChatCompletionFunctionToolTests(unittest.TestCase):
     def test_unknown_forced_function_is_rejected(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             openai_v1_chat_complete.text_chat_parts({
-                "model": "auto",
+                "model": "gpt-6.1-sol",
                 "messages": [{"role": "user", "content": "weather"}],
                 "tools": [WEATHER_TOOL],
                 "tool_choice": {"type": "function", "function": {"name": "missing"}},
@@ -145,7 +145,7 @@ class ChatCompletionFunctionToolTests(unittest.TestCase):
     def test_required_choice_without_functions_is_rejected(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             openai_v1_chat_complete.text_chat_parts({
-                "model": "auto",
+                "model": "gpt-6.1-sol",
                 "messages": [{"role": "user", "content": "weather"}],
                 "tool_choice": "required",
             })
@@ -154,7 +154,7 @@ class ChatCompletionFunctionToolTests(unittest.TestCase):
 
     def test_required_choice_fails_if_model_does_not_call(self) -> None:
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "messages": [{"role": "user", "content": "weather"}],
             "tools": [WEATHER_TOOL],
             "tool_choice": "required",
@@ -172,7 +172,7 @@ class ChatCompletionFunctionToolTests(unittest.TestCase):
 
     def test_parallel_tool_calls_false_keeps_one_call(self) -> None:
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "messages": [{"role": "user", "content": "weather"}],
             "tools": [WEATHER_TOOL],
             "parallel_tool_calls": False,
@@ -212,7 +212,7 @@ class ChatCompletionFunctionToolTests(unittest.TestCase):
 
     def test_reasoning_recap_is_returned_separately_from_function_call(self) -> None:
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "messages": [{"role": "user", "content": "上海天气如何？"}],
             "tools": [WEATHER_TOOL],
         }
@@ -328,7 +328,7 @@ class ChatCompletionWebSearchTests(unittest.TestCase):
 
     def test_search_stream_emits_role_before_blocking_search_and_annotations_after(self) -> None:
         body = {
-            "model": "auto",
+            "model": "gpt-6.1-sol",
             "stream": True,
             "messages": [{"role": "user", "content": "latest news"}],
             "tools": [{"type": "web_search"}],
@@ -407,7 +407,7 @@ class ChatCompletionWebSearchTests(unittest.TestCase):
     def test_hosted_search_and_client_functions_are_rejected_when_mixed(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             openai_v1_chat_complete.handle({
-                "model": "auto",
+                "model": "gpt-6.1-sol",
                 "messages": [{"role": "user", "content": "latest weather"}],
                 "tools": [{"type": "web_search"}, WEATHER_TOOL],
             })
@@ -421,12 +421,13 @@ class ChatCompletionWebSearchTests(unittest.TestCase):
             mock.patch.object(web_search_tool.account_service, "get_text_access_token", return_value="token") as token,
             mock.patch.object(web_search_tool.account_service, "mark_text_used") as mark,
             mock.patch.object(web_search_tool, "OpenAIBackendAPI", return_value=backend),
+            mock.patch.object(web_search_tool.model_catalog_service, "resolve_model", return_value="gpt-6.1-sol"),
         ):
             result = web_search_tool.run_web_search("query")
 
         self.assertEqual(result["answer"], "ok")
-        token.assert_called_once_with(model=web_search_tool.SEARCH_MODEL)
-        backend.search.assert_called_once_with("query")
+        token.assert_called_once_with(model="gpt-6.1-sol")
+        backend.search.assert_called_once_with("query", model="gpt-6.1-sol")
         backend.close.assert_called_once_with()
         mark.assert_called_once_with("token")
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from utils.text_models import DEFAULT_TEXT_MODEL
+
 import base64
 import json
 import secrets
@@ -1067,11 +1069,11 @@ class AccountService:
     def get_text_access_token(
             self,
             excluded_tokens: set[str] | None = None,
-            model: str = "auto",
+            model: str = DEFAULT_TEXT_MODEL,
     ) -> str:
         excluded = set(excluded_tokens or set())
-        requested_model = str(model or "auto").strip() or "auto"
-        from services.model_service import model_catalog_service
+        requested_model = str(model or DEFAULT_TEXT_MODEL).strip() or DEFAULT_TEXT_MODEL
+        from services.model_service import model_account_key, model_catalog_service
 
         route = model_catalog_service.route_for_model(requested_model)
         with self._lock:
@@ -1082,6 +1084,7 @@ class AccountService:
                    and self._normalize_account_type(account.get("type")) in route.account_types
                    and (token := account.get("access_token") or "")
                    and token not in excluded
+                   and (route.account_keys is None or model_account_key(token) in route.account_keys)
             ]
             if not candidates:
                 if route.allow_anonymous:
