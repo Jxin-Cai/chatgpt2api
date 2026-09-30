@@ -168,7 +168,7 @@ export function TopNav() {
                     );
                     return (
                       <SheetClose asChild key={item.href}>
-                        <Link href={item.href} className={className}>{item.label}</Link>
+                        <Link prefetch={false} href={item.href} className={className}>{item.label}</Link>
                       </SheetClose>
                     );
                   })}
@@ -185,6 +185,7 @@ export function TopNav() {
               </SheetContent>
             </Sheet>
             <Link
+              prefetch={false}
               href="/image"
               className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-xl py-1 pr-2 text-[15px] font-bold tracking-tight text-stone-950 transition-colors duration-200 hover:bg-stone-100 hover:text-stone-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-400 dark:text-stone-50 dark:hover:bg-white/10 dark:hover:text-white"
             >
@@ -207,6 +208,7 @@ export function TopNav() {
               const active = pathname === item.href;
               return (
                 <Link
+                  prefetch={false}
                   key={item.href}
                   href={item.href}
                   className={cn(

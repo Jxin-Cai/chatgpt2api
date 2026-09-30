@@ -356,3 +356,6 @@ node web/test/live-client.test.mjs
 ```
 
 测试使用合成上游，不消耗真实语音账号。包含线协议校验、错误关联、采样率/频率保持、增量字幕、控制事件优先、长通话额度绑定以及 aiortc 本机 WebRTC 握手/数据通道。真实 ChatGPT 上游、不同浏览器设备和公网 TURN 链路仍需联调，不能以这些测试代替端到端音质与延迟测量。
+
+
+部署入口使用 `uv run python main.py --host 0.0.0.0 --port 80`（Docker 已配置）。该入口为 WebSocket 的 PCM 写入与 keepalive 共用排水锁，避免 websockets 17 legacy 在网络背压时两个写入者争抢单个等待对象而断开会话。自定义 Uvicorn 启动器请传入 `ws=RealtimeWebSocketProtocol`，见 `services/realtime/server_protocol.py`。

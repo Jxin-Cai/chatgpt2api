@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 
 from api import accounts, ai, image_tasks, live, realtime, system
 from api.errors import install_exception_handlers
+from api.static_compression import StaticAssetCompression
 from api.support import resolve_web_asset, start_limited_account_watcher
 from services.backup_service import backup_service
 from services.config import config
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="chatgpt2api", version=app_version, lifespan=lifespan)
     install_exception_handlers(app)
+    app.add_middleware(StaticAssetCompression, minimum_size=1024, compresslevel=5)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
