@@ -12,6 +12,7 @@ from av import AudioResampler
 from services.live.protocol import MAX_MESSAGE_BYTES
 from services.realtime.audio_track import BufferedAudioStreamTrack
 from services.realtime.session import resample_to_pcm16_mono
+from utils.log import logger
 
 
 class WebRTCTransport:
@@ -28,7 +29,7 @@ class WebRTCTransport:
             self.pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(**item) for item in servers]))
         else:
             self.pc = RTCPeerConnection()
-        self.output = BufferedAudioStreamTrack(queue_max=15)
+        self.output = BufferedAudioStreamTrack(queue_max=15, prefill_frames=3, smooth_edges=True)
         self.pc.addTrack(self.output)
         self.channel = None
         self._ready = asyncio.Event()
@@ -144,6 +145,10 @@ class WebRTCTransport:
             while self.channel.bufferedAmount and asyncio.get_running_loop().time() < deadline:
                 await asyncio.sleep(0.01)
 
+    def write_audio(self, pcm: bytes) -> None:
+        if not self._closed:
+            self.output.push_pcm16(pcm)
+
     def clear_audio(self) -> None:
         self.output.clear()
 
@@ -157,5 +162,9 @@ class WebRTCTransport:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info(
+            f"[live-audio] output underflows={self.output.underrun_events}, "
+            f"dropped_frames={self.output.dropped_frames}"
+        )
         self.output.stop()
         await self.pc.close()

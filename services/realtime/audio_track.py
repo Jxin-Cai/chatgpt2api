@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from fractions import Fraction
 
+import numpy as np
 from aiortc import MediaStreamTrack
 from av import AudioFrame
 
@@ -22,13 +23,21 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
 
     kind = "audio"
 
-    def __init__(self, queue_max: int = 15):
+    def __init__(self, queue_max: int = 15, *, prefill_frames: int = 0, smooth_edges: bool = False):
         super().__init__()
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=queue_max)
         self._pts = 0
         self._remainder = b""
         self._next_frame_at: float | None = None
         self._dropped_frames = 0
+        self._prefill_frames = min(max(0, prefill_frames), queue_max)
+        self._buffering = self._prefill_frames > 0
+        self._buffer_wait = 0
+        self._smooth_edges = smooth_edges
+        self._discontinuous = True
+        self._had_audio = False
+        self._last_sample = 0
+        self.underrun_events = 0
 
     @property
     def buffered_frames(self) -> int:
@@ -48,6 +57,7 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
                 try:
                     self._queue.get_nowait()
                     self._dropped_frames += 1
+                    self._discontinuous = True
                 except asyncio.QueueEmpty:
                     pass
             try:
@@ -65,6 +75,38 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
             except asyncio.QueueEmpty:
                 break
         self._remainder = b""
+        self._buffering = self._prefill_frames > 0
+        self._buffer_wait = 0
+        self._discontinuous = True
+
+    def _pull_pcm(self) -> bytes:
+        # This buffer is before the outgoing Opus encoder. The browser's jitter
+        # buffer cannot undo hard silence already encoded by this media bridge.
+        if self._buffering and not self._queue.empty():
+            self._buffer_wait += 1
+            if self._queue.qsize() >= self._prefill_frames or self._buffer_wait >= self._prefill_frames:
+                self._buffering = False  # bounded wait also releases short utterances
+                self._buffer_wait = 0
+        has_audio = not self._buffering and not self._queue.empty()
+        if has_audio:
+            pcm = self._queue.get_nowait()
+        else:
+            pcm = SILENCE
+            if self._had_audio:
+                self.underrun_events += 1
+                self._buffering = self._prefill_frames > 0
+                self._buffer_wait = 0
+        if self._smooth_edges and (self._discontinuous or has_audio != self._had_audio):
+            samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+            # Crossfade only a discontinuity, never every packet. A five-ms
+            # offset ramp removes the step without changing pitch or duration.
+            count = min(240, len(samples))
+            samples[:count] += (self._last_sample - samples[0]) * np.linspace(1, 0, count)
+            pcm = np.clip(np.rint(samples), -32768, 32767).astype("<i2").tobytes()
+        self._last_sample = int.from_bytes(pcm[-2:], "little", signed=True)
+        self._had_audio = has_audio
+        self._discontinuous = False
+        return pcm
 
     async def recv(self) -> AudioFrame:
         # aiortc 会尽可能快地调用 recv()，轨道自身必须负责节拍。只在队列为空
@@ -79,10 +121,7 @@ class BufferedAudioStreamTrack(MediaStreamTrack):
             self._next_frame_at = max(self._next_frame_at + FRAME_DURATION, now)
             await asyncio.sleep(max(0.0, self._next_frame_at - now))
 
-        try:
-            pcm = self._queue.get_nowait()
-        except asyncio.QueueEmpty:
-            pcm = SILENCE
+        pcm = self._pull_pcm()
 
         frame = AudioFrame(format="s16", layout="mono", samples=SAMPLES_PER_FRAME)
         frame.sample_rate = SAMPLE_RATE

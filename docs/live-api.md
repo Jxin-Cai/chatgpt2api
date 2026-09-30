@@ -281,6 +281,10 @@ asyncio.run(main())
 
 调试页优先 Live WebRTC，网络/服务端失败时回退 Live WS；参数和鉴权类 4xx 不会被传输回退掩盖。WS 播放初始预填为 180ms，上限 600ms，AudioContext 使用 interactive 提示；WebRTC 接收端初始缓冲目标为 120ms。它们是当前工程默认值，尚非生产网络实测最优值。
 
+为减少偶发爆音，Live WebRTC 在服务器输出轨道增加最多约 60ms 的启动/断流恢复预填；队列仍限制为 300ms，不加速播放。解码后的 20ms PCM 帧直接进入媒体轨道，不经过 WS 的 40ms JSON 聚合和 DTX 补静音。启动、断流、清空或溢出后的拼接使用 5ms 平滑过渡，正常连续帧保持原样。WS AudioWorklet 同样平滑断点，并在缺帧后重新预填，避免反复播放极短碎片。短尾音通过有界等待或本地播放结束提示释放。
+
+排查“啪/滋”声时，区分浏览器 `packetsLost` / `concealedSamples` 与服务器输出队列问题：网络丢包为零也不能证明音频连续。会话结束时的 `[live-audio]` 日志记录队列空转次数和丢弃帧数；空转也可能发生在正常停顿，需结合有声片段分析。修复中的合成音频回归覆盖 25ms 到达抖动、断流恢复、打断清空、溢出、短尾音和 DTX 间隔。
+
 字幕按序保留；音频连续发送时，控制事件优先、字幕公平调度。识别到上游 speech-start 打断后，清除服务器旧音频，等待新的 speaking 状态；WS 已经发出的音频无法撤回，低播放水位有助于降低残留播放时间。严重拥塞会关闭连接，避免无提示丢弃关键字幕并继续展示损坏的会话。
 
 网络恢复新建 Live 会话，并通过标准 `session.input` 携带最近最多 8 条、每条最多 600 字符的显示历史，同时保持用户静音选择。它不是上游原会话恢复，无法恢复尚未收到的字幕、精确音频时间线或模型内部状态。不自动重放未确认的文字命令，避免重复执行；原始音频也不重播。
@@ -342,7 +346,7 @@ docker compose --env-file .env.live -f docker-compose.yml -f docker-compose.live
 ## 验证
 
 ```bash
-.venv/bin/python -m pytest -q test/test_live.py test/test_realtime.py test/test_realtime_signaling.py test/test_realtime_signaling_guard.py
+.venv/bin/python -m pytest -q test/test_live.py test/test_live_audio_quality.py test/test_realtime.py test/test_realtime_signaling.py test/test_realtime_signaling_guard.py
 node web/node_modules/typescript/bin/tsc --noEmit -p web/tsconfig.json
 node web/test/live-client.test.mjs
 ```

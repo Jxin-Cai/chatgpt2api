@@ -559,6 +559,7 @@ class RealtimeSession:
         resampler = AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
         assembler = self._output_assembler
         recv_count = 0
+        media_writer = getattr(self._ws, "write_audio", None)
 
         async def emit(events: list[AudioProtocolEvent]) -> None:
             for event in events:
@@ -595,7 +596,7 @@ class RealtimeSession:
                 last_duration=self._last_frame_s,
                 waited=waited,
             )
-            if pad_s >= 0.02:
+            if not media_writer and pad_s >= 0.02:
                 await emit(assembler.push(b"\x00\x00" * int(SAMPLE_RATE * pad_s)))
             if media_now is not None:
                 self._last_media_s = media_now
@@ -612,7 +613,13 @@ class RealtimeSession:
                         f"output=s16/mono/{output_frame.sample_rate}Hz/{output_frame.samples}, "
                         f"rms={pcm16_rms(pcm_bytes):.0f}"
                     )
-                await emit(assembler.push(pcm_bytes))
+                if media_writer:
+                    # RTP has its own paced track: forward decoded frames once.
+                    # Replaying a past DTX gap here adds silence a second time,
+                    # overflows the small RTP queue and splices speech abruptly.
+                    media_writer(pcm_bytes)
+                else:
+                    await emit(assembler.push(pcm_bytes))
 
         await emit(assembler.finish())
 

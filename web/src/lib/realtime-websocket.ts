@@ -460,8 +460,12 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
             this.available = 0;
             this.playing = false;
             this.ending = false;
-            this.hunger = 0;
-            this.maxHunger = Math.round((sampleRate || 48000) * 1.2 / 128);
+            this.lastSample = 0;
+            this.hadAudio = false;
+            this.discontinuous = true;
+            this.fadeSamples = Math.max(1, Math.round(sampleRate * 0.005));
+            this.fadeRemaining = 0;
+            this.fadeOffset = 0;
             this.port.onmessage = (event) => {
               const data = event.data;
               if (data && data.type === 'stop') {
@@ -470,7 +474,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
                 this.available = 0;
                 this.playing = false;
                 this.ending = false;
-                this.hunger = 0;
+                this.discontinuous = true;
                 return;
               }
               if (data && data.type === 'end') {
@@ -487,6 +491,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
               if (overflow > 0) {
                 this.read = (this.read + overflow) % this.buffer.length;
                 this.available -= overflow;
+                this.discontinuous = true;
               }
               let offset = 0;
               while (offset < samples.length) {
@@ -496,7 +501,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
                 this.available += count;
                 offset += count;
               }
-              if (!this.playing && (this.available >= this.prefill || this.hunger > 0)) this.playing = true;
+              if (!this.playing && this.available >= this.prefill) this.playing = true;
             };
           }
           readSample() {
@@ -505,38 +510,41 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
             this.available -= 1;
             return sample;
           }
+          smooth(sample, hasAudio) {
+            if (this.discontinuous || hasAudio !== this.hadAudio) {
+              this.fadeOffset = this.lastSample - sample;
+              this.fadeRemaining = this.fadeSamples;
+              this.discontinuous = false;
+            }
+            if (this.fadeRemaining > 0) {
+              sample += this.fadeOffset * (this.fadeRemaining / this.fadeSamples);
+              this.fadeRemaining -= 1;
+            }
+            this.lastSample = Math.max(-1, Math.min(1, sample));
+            this.hadAudio = hasAudio;
+            return this.lastSample;
+          }
           process(_, outputs) {
             const output = outputs[0] && outputs[0][0];
             if (!output) return true;
             const frames = output.length;
             if (!this.playing) {
-              if (this.available >= this.prefill || (this.ending && this.available > 0) || (this.hunger > 0 && this.available > 0)) {
+              if (this.available >= this.prefill || (this.ending && this.available > 0)) {
                 this.playing = true;
               } else {
-                output.fill(0);
+                for (let i = 0; i < frames; i += 1) output[i] = this.smooth(0, false);
                 return true;
               }
             }
-            if (this.available <= 0) {
-              output.fill(0);
-              if (this.ending) {
-                this.playing = false;
-                this.ending = false;
-                this.hunger = 0;
-                return true;
-              }
-              this.hunger += 1;
-              if (this.hunger >= this.maxHunger) {
-                this.playing = false;
-                this.prefill = Math.min(this.maxPrefill, this.prefill + frames * 8);
-                this.hunger = 0;
-              }
-              return true;
-            }
-            this.hunger = 0;
             const got = Math.min(frames, this.available);
-            for (let i = 0; i < got; i += 1) output[i] = this.readSample();
-            if (got < frames) output.fill(0, got);
+            for (let i = 0; i < got; i += 1) output[i] = this.smooth(this.readSample(), true);
+            for (let i = got; i < frames; i += 1) output[i] = this.smooth(0, false);
+            if (got < frames) {
+              // Refill after an underrun instead of emitting one tiny fragment
+              // at a time for 1.2s. The idle end message releases short tails.
+              this.playing = false;
+              this.ending = false;
+            }
             return true;
           }
         }
