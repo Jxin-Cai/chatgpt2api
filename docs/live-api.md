@@ -279,7 +279,7 @@ asyncio.run(main())
 
 ## 播放、重连与部署
 
-调试页优先 Live WebRTC，以 Opus 压缩音频避免较慢公网链路上的 PCM 排队；启动失败时回退 Live WebSocket。浏览器直接检查 Live 答复中的服务器公网候选，服务端直接检查上游候选，两端不再等待无关公共 STUN 服务；Docker 仍需下述 TURN 配置。两种公开 Live 传输均保留。
+调试页优先 Live WebRTC，以 Opus 压缩音频避免较慢公网链路上的 PCM 排队；启动失败时回退 Live WebSocket。浏览器保留 STUN 公网候选收集，供服务端 TURN 建立权限；服务端到上游的一段直接检查上游公网候选，省去额外 STUN 等待。Docker 仍需下述 TURN 配置。两种公开 Live 传输均保留。
 
 WS 播放初始预填为 180ms，播放保持原速。最多保留 2 秒音频以吸收 TCP 短暂积压，只有真正超出队列容量时才裁剪；不再在 600ms 时清空队列切掉词句。AudioContext 使用设备原生采样率和 interactive 提示，实际 PCM 输入输出仍按协商的 16/24kHz 重采样。音频激活与 AudioWorklet 加载都有超时，工作线程加载失败会回退到备用采集与播放节点。
 
