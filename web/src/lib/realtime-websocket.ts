@@ -64,6 +64,21 @@ class BufferSourceScheduler {
   ) {}
 
   push(samples: Float32Array): void {
+    if (!this.buffering && this.nextAt < this.context.currentTime) {
+      this.stop(); // A real underrun needs a fresh prefill, not tiny fragments.
+    }
+    const queuedSamples = this.buffering ? this.pendingSamples
+      : Math.max(0, this.nextAt - this.context.currentTime) * this.context.sampleRate;
+    const maxSamples = Math.round(this.context.sampleRate * PLAYOUT_MAX_LEAD_SECONDS);
+    if (queuedSamples + samples.length > maxSamples) {
+      for (const source of this.activeSources) {
+        try { source.stop(); } catch { /* Already ended. */ }
+        source.disconnect();
+      }
+      this.activeSources.clear();
+      this.stop();
+      samples = samples.subarray(Math.max(0, samples.length - this.prefillSamples));
+    }
     if (this.buffering) {
       this.pending.push(samples);
       this.pendingSamples += samples.length;
@@ -454,7 +469,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
             const ring = Math.max(128, opts.ringSamples || 240000);
             this.buffer = new Float32Array(ring);
             this.prefill = Math.max(128, opts.prefillSamples || Math.round(ring * 0.12));
-            this.maxPrefill = Math.max(this.prefill, opts.maxPrefillSamples || this.prefill * 2);
+            this.maxBuffered = Math.min(ring, Math.max(this.prefill, opts.maxBufferedSamples || this.prefill * 2));
             this.read = 0;
             this.write = 0;
             this.available = 0;
@@ -484,10 +499,15 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
               }
               this.ending = false;
               let samples = data instanceof Float32Array ? data : new Float32Array(data);
-              if (samples.length > this.buffer.length) {
-                samples = samples.subarray(samples.length - this.buffer.length);
+              if (samples.length > this.maxBuffered) {
+                samples = samples.subarray(samples.length - this.prefill);
+                this.discontinuous = true;
               }
-              const overflow = samples.length - (this.buffer.length - this.available);
+              // The ring's physical capacity is not a latency budget. Recover
+              // to the live edge after a stalled tab / burst instead of keeping
+              // seconds of old speech permanently queued.
+              const overflow = this.available + samples.length > this.maxBuffered
+                ? Math.min(this.available, this.available + samples.length - this.prefill) : 0;
               if (overflow > 0) {
                 this.read = (this.read + overflow) % this.buffer.length;
                 this.available -= overflow;
@@ -570,7 +590,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         processorOptions: {
           ringSamples: context.sampleRate * 2,
           prefillSamples: Math.round(context.sampleRate * PLAYOUT_LEAD_SECONDS),
-          maxPrefillSamples: Math.round(context.sampleRate * PLAYOUT_MAX_LEAD_SECONDS),
+          maxBufferedSamples: Math.round(context.sampleRate * PLAYOUT_MAX_LEAD_SECONDS),
         },
       });
       playback.connect(playbackGain);

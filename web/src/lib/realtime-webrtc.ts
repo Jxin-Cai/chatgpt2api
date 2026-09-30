@@ -76,8 +76,8 @@ export interface RealtimeConnection {
 const CONNECTION_TIMEOUT_MS = 15_000;
 const ICE_GATHERING_TIMEOUT_MS = 5_000;
 const DATA_CHANNEL_TIMEOUT_MS = 10_000;
-const INITIAL_JITTER_BUFFER_MS = 120;
-const MAX_JITTER_BUFFER_MS = 600;
+const INITIAL_JITTER_BUFFER_MS = 60;
+const MAX_JITTER_BUFFER_MS = 180;
 
 type BufferedAudioReceiver = RTCRtpReceiver & {
   jitterBufferTarget?: number | null;
@@ -205,7 +205,7 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
   private sessionReport: { authorization: string; baseUrl: string; callId: string } | null = null;
   private audioReceiver: BufferedAudioReceiver | null = null;
   private jitterBufferTargetMs = INITIAL_JITTER_BUFFER_MS;
-  private previousAudioStats: { packetsReceived: number; packetsLost: number; concealedSamples: number; totalSamplesReceived: number } | null = null;
+  private previousAudioStats: { packetsReceived: number; packetsLost: number; concealedSamples: number; totalSamplesReceived: number; jitterBufferDelay: number; jitterBufferEmittedCount: number } | null = null;
   private healthyQualitySamples = 0;
   private closed = true;
 
@@ -614,14 +614,13 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
             quality.packetsLost = typeof stat.packetsLost === "number" ? stat.packetsLost : undefined;
             quality.packetsReceived = typeof stat.packetsReceived === "number" ? stat.packetsReceived : undefined;
             quality.concealedSamples = typeof stat.concealedSamples === "number" ? stat.concealedSamples : undefined;
-            if (typeof stat.jitterBufferDelay === "number" && typeof stat.jitterBufferEmittedCount === "number" && stat.jitterBufferEmittedCount > 0) {
-              quality.jitterBufferMs = Math.round(stat.jitterBufferDelay / stat.jitterBufferEmittedCount * 1000);
-            }
             const current = {
               packetsReceived: Number(stat.packetsReceived || 0),
               packetsLost: Number(stat.packetsLost || 0),
               concealedSamples: Number(stat.concealedSamples || 0),
               totalSamplesReceived: Number(stat.totalSamplesReceived || 0),
+              jitterBufferDelay: Number(stat.jitterBufferDelay || 0),
+              jitterBufferEmittedCount: Number(stat.jitterBufferEmittedCount || 0),
             };
             const previous = this.previousAudioStats;
             if (previous) {
@@ -632,14 +631,22 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
               const concealedDelta = Math.max(0, current.concealedSamples - previous.concealedSamples);
               quality.packetLossPercent = packetTotal > 0 ? lostDelta / packetTotal * 100 : 0;
               quality.concealedSamplePercent = sampleDelta > 0 ? concealedDelta / sampleDelta * 100 : 0;
+              const emitted = current.jitterBufferEmittedCount - previous.jitterBufferEmittedCount;
+              if (emitted > 0) {
+                quality.jitterBufferMs = Math.round(Math.max(0, current.jitterBufferDelay - previous.jitterBufferDelay) / emitted * 1000);
+              }
 
-              if (quality.packetLossPercent > 2 || quality.concealedSamplePercent > 1) {
+              // Packet loss is not repaired by waiting longer. Size the extra
+              // playout delay from measured jitter, without a loss-driven ratchet.
+              const desired = Math.min(MAX_JITTER_BUFFER_MS, Math.max(INITIAL_JITTER_BUFFER_MS,
+                Math.ceil((quality.jitterMs || 0) * 2 / 20) * 20));
+              if (desired > this.jitterBufferTargetMs) {
                 this.healthyQualitySamples = 0;
-                this.setJitterBufferTarget(this.jitterBufferTargetMs + 80);
+                this.setJitterBufferTarget(desired);
               } else {
                 this.healthyQualitySamples += 1;
-                if (this.healthyQualitySamples >= 15 && this.jitterBufferTargetMs > INITIAL_JITTER_BUFFER_MS) {
-                  this.setJitterBufferTarget(this.jitterBufferTargetMs - 40);
+                if (this.healthyQualitySamples >= 5 && this.jitterBufferTargetMs > desired) {
+                  this.setJitterBufferTarget(Math.max(desired, this.jitterBufferTargetMs - 40));
                   this.healthyQualitySamples = 0;
                 }
               }

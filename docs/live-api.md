@@ -279,11 +279,15 @@ asyncio.run(main())
 
 ## 播放、重连与部署
 
-调试页优先 Live WebRTC，网络/服务端失败时回退 Live WS；参数和鉴权类 4xx 不会被传输回退掩盖。WS 播放初始预填为 180ms，上限 600ms，AudioContext 使用 interactive 提示；WebRTC 接收端初始缓冲目标为 120ms。它们是当前工程默认值，尚非生产网络实测最优值。
+调试页优先 Live WebRTC，网络/服务端失败时回退 Live WS；参数和鉴权类 4xx 不会被传输回退掩盖。WS 播放初始预填为 180ms，上限 600ms，AudioContext 使用 interactive 提示。AudioWorklet 和备用 AudioBufferSource 播放器都会执行此上限；积压超限时丢弃旧音频并回到当前音频，避免长时间播放历史队列。
+
+WebRTC 浏览器接收端初始缓冲目标为 60ms，按实测抖动调整，最高 180ms；不会因丢包率或补偿率单独逐次增加。网络恢复后每 5 个采样周期降低 40ms。质量提示中的缓冲时间使用最近采样区间，避免整场平均值掩盖近期积压。这些是缓冲目标，不是端到端响应时间保证。
+
+服务器两条 WebRTC 接收链路使用 3 包重排窗口（20ms Opus 包约 60ms）。aiortc 默认通用缓冲在丢包后可能保持约 280–300ms 的积压；这里跳过超过重排窗口的缺包，保留窗口内乱序恢复，并在长断流后淘汰过期包。该音频专用适配通过一个受检查的 aiortc 私有接口安装，不影响视频；升级 aiortc 时需运行 RTP 和真实本机 WebRTC 回归。
 
 为减少偶发爆音，Live WebRTC 在服务器输出轨道增加最多约 60ms 的启动/断流恢复预填；队列仍限制为 300ms，不加速播放。解码后的 20ms PCM 帧直接进入媒体轨道，不经过 WS 的 40ms JSON 聚合和 DTX 补静音。启动、断流、清空或溢出后的拼接使用 5ms 平滑过渡，正常连续帧保持原样。WS AudioWorklet 同样平滑断点，并在缺帧后重新预填，避免反复播放极短碎片。短尾音通过有界等待或本地播放结束提示释放。
 
-排查“啪/滋”声时，区分浏览器 `packetsLost` / `concealedSamples` 与服务器输出队列问题：网络丢包为零也不能证明音频连续。会话结束时的 `[live-audio]` 日志记录队列空转次数和丢弃帧数；空转也可能发生在正常停顿，需结合有声片段分析。修复中的合成音频回归覆盖 25ms 到达抖动、断流恢复、打断清空、溢出、短尾音和 DTX 间隔。
+排查“啪/滋”声时，区分浏览器 `packetsLost` / `concealedSamples` 与服务器输出队列问题：网络丢包为零也不能证明音频连续。会话结束时的 `[live-audio]` 日志记录队列空转次数、丢弃帧数和麦克风 RTP 缺包/迟到包；`[realtime] Session closed` 记录上游 RTP 缺包/迟到包和输入队列丢帧。空转也可能发生在正常停顿，需结合有声片段分析。合成音频回归覆盖 25ms 到达抖动、单包/连续丢包、乱序、序号回绕、断流恢复、打断清空、溢出、短尾音和 DTX 间隔。
 
 字幕按序保留；音频连续发送时，控制事件优先、字幕公平调度。识别到上游 speech-start 打断后，清除服务器旧音频，等待新的 speaking 状态；WS 已经发出的音频无法撤回，低播放水位有助于降低残留播放时间。严重拥塞会关闭连接，避免无提示丢弃关键字幕并继续展示损坏的会话。
 
@@ -346,7 +350,7 @@ docker compose --env-file .env.live -f docker-compose.yml -f docker-compose.live
 ## 验证
 
 ```bash
-.venv/bin/python -m pytest -q test/test_live.py test/test_live_audio_quality.py test/test_realtime.py test/test_realtime_signaling.py test/test_realtime_signaling_guard.py
+.venv/bin/python -m pytest -q test/test_live.py test/test_live_audio_quality.py test/test_audio_receive_buffer.py test/test_realtime.py test/test_realtime_signaling.py test/test_realtime_signaling_guard.py
 node web/node_modules/typescript/bin/tsc --noEmit -p web/tsconfig.json
 node web/test/live-client.test.mjs
 ```

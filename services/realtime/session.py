@@ -15,6 +15,7 @@ from fastapi import WebSocket
 
 from services.realtime.audio_track import BufferedAudioStreamTrack, SAMPLE_RATE
 from services.realtime.chatgpt_webrtc import create_peer_connection
+from services.realtime.receive_buffer import audio_receive_stats
 from services.realtime.signaling import UpstreamSignalingError
 from utils.log import logger
 
@@ -742,5 +743,7 @@ class RealtimeSession:
         duration = time.time() - self._start_time
         logger.info(
             f"[realtime] Session closed after {duration:.1f}s "
-            f"(dc_dropped={self._dc_dropped_messages})"
+            f"(dc_dropped={self._dc_dropped_messages}, "
+            f"upstream_audio={audio_receive_stats(self._pc)}, "
+            f"input_dropped={self._input_track.dropped_frames if self._input_track else 0})"
         )

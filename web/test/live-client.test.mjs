@@ -119,4 +119,60 @@ player.port.onmessage({ data: new Float32Array(9000).fill(0.5) });
 player.process([], output);
 assert.equal(output[0][0][0], 0, 'recovered audio fades in');
 assert.ok(output[0][0].some(value => value > 0));
-console.log('Live client: transcripts, worklet continuity, underrun recovery, startup gating and resampling passed');
+
+// A network burst / suspended tab must obey the stated 600ms latency cap.
+player.port.onmessage({ data: { type: 'stop' } });
+for (let i = 0; i < 60; i++) player.port.onmessage({ data: new Float32Array(1920).fill(i / 100) });
+assert.ok(player.available <= 48000 * 0.6, 'worklet cannot retain seconds of stale speech');
+player.port.onmessage({ data: new Float32Array(48000 * 3).fill(0.75) });
+assert.ok(player.available <= 48000 * 0.6, 'oversized chunks are also bounded');
+
+// Exercise the actual fallback scheduler, including future scheduled sources.
+const fallbackContext = {
+  sampleRate: 48000, currentTime: 0,
+  createBuffer: (_, length) => ({ getChannelData: () => new Float32Array(length) }),
+  createBufferSource: () => ({ connect() {}, disconnect() {}, start() {}, stop() {} }),
+};
+const scheduler = connection.fallbackScheduler;
+scheduler.context = fallbackContext;
+for (let i = 0; i < 80; i++) scheduler.push(new Float32Array(1920));
+assert.ok(scheduler.nextAt <= 0.6, 'fallback also discards stale scheduled sources');
+fallbackContext.currentTime = 5;
+scheduler.push(new Float32Array(960));
+assert.equal(scheduler.buffering, true, 'fallback refills after an underrun');
+scheduler.end();
+assert.ok(scheduler.nextAt > 5, 'short tail is released');
+
+// Real quality sampling must not turn unrecoverable packet loss into 600ms delay.
+let statsTick = 0;
+let jitter = 0.001;
+let sampleQuality;
+let sampleCallback;
+const { RealtimeWebRTCConnection } = await load('../src/lib/realtime-webrtc.ts', {
+  window: { setInterval: callback => { sampleCallback = callback; return 1; }, clearInterval() {} },
+});
+const rtc = new RealtimeWebRTCConnection({ onEvent() {}, onConnectionState() {}, onQuality: q => { sampleQuality = q; } }, 'live');
+rtc.closed = false;
+rtc.audioReceiver = { jitterBufferTarget: 0 };
+rtc.setJitterBufferTarget(60);
+const peer = { connectionState: 'connected', getStats: async () => {
+  statsTick++;
+  return new Map([['audio', { type: 'inbound-rtp', kind: 'audio', jitter,
+    packetsReceived: statsTick * 45, packetsLost: statsTick * 5,
+    concealedSamples: statsTick * 4800, totalSamplesReceived: statsTick * 48000,
+    jitterBufferDelay: statsTick * 4800, jitterBufferEmittedCount: statsTick * 48000,
+  }]]);
+}};
+rtc.startQualitySampling(peer);
+const sampleRtc = async () => { sampleCallback(); await new Promise(setImmediate); };
+await new Promise(setImmediate);
+for (let i = 0; i < 20; i++) await sampleRtc();
+assert.equal(rtc.audioReceiver.jitterBufferTarget, 60, 'loss alone must not ratchet buffering');
+assert.equal(sampleQuality.jitterBufferMs, 100, 'display current interval buffering');
+jitter = 0.12;
+await sampleRtc();
+assert.equal(rtc.audioReceiver.jitterBufferTarget, 180, 'jitter protection has a conversational cap');
+jitter = 0.001;
+for (let i = 0; i < 15; i++) await sampleRtc();
+assert.equal(rtc.audioReceiver.jitterBufferTarget, 60, 'recover promptly when jitter settles');
+console.log('Live client: transcripts, continuity, resampling, bounded worklet/fallback latency and jitter recovery passed');
