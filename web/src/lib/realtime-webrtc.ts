@@ -125,23 +125,38 @@ async function signalingErrorFromResponse(
   );
 }
 
-function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
+export function waitForIceGathering(pc: RTCPeerConnection, allowEarlyPublicCandidate = false): Promise<void> {
   if (pc.iceGatheringState === "complete") return Promise.resolve();
   return new Promise((resolve) => {
     let settled = false;
     let timeout = 0;
+    let publicCandidateTimeout = 0;
     const finish = () => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timeout);
+      window.clearTimeout(publicCandidateTimeout);
       pc.removeEventListener("icegatheringstatechange", onStateChange);
+      pc.removeEventListener("icecandidate", onCandidate);
       resolve();
     };
     const onStateChange = () => {
       if (pc.iceGatheringState === "complete") finish();
     };
+    const onCandidate = () => {
+      // A TURN permission needs a public browser address. Once it is in the
+      // offer, allow nearby interfaces to finish too, without waiting five
+      // seconds for every unreachable VPN / virtual adapter's STUN request.
+      if (allowEarlyPublicCandidate && !publicCandidateTimeout
+          && /^a=candidate:.* typ (?:srflx|relay)(?:\s|$)/m.test(pc.localDescription?.sdp ?? "")) {
+        publicCandidateTimeout = window.setTimeout(finish, 500);
+      }
+    };
     pc.addEventListener("icegatheringstatechange", onStateChange);
+    pc.addEventListener("icecandidate", onCandidate);
     timeout = window.setTimeout(finish, ICE_GATHERING_TIMEOUT_MS);
+    onCandidate();
+    onStateChange();
   });
 }
 
@@ -320,7 +335,7 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    await waitForIceGathering(pc);
+    await waitForIceGathering(pc, this.protocol === "live");
     if (this.closed) throw new Error("连接已取消");
     if (!pc.localDescription?.sdp) throw new Error("无法生成 WebRTC SDP offer");
 

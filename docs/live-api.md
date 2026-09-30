@@ -313,7 +313,7 @@ docker compose --env-file .env.live -f docker-compose.yml -f docker-compose.live
 docker compose --env-file .env.live -f docker-compose.yml -f docker-compose.live.yml up -d
 ```
 
-后续升级继续使用相同覆盖文件和环境文件。浏览器也需配置可达的 STUN 服务，将公网 `srflx` 候选写入 offer，否则服务器 TURN 无法为浏览器公网 IP 建立权限。多网卡设备可能持续收集不可达网卡的候选；在收集超时时已有 `srflx`/`relay` 候选的情况下，可以提交当前 SDP，而不必放弃整个连接。
+后续升级继续使用相同覆盖文件和环境文件。浏览器也需配置可达的 STUN 服务，将公网 `srflx` 候选写入 offer，否则服务器 TURN 无法为浏览器公网 IP 建立权限。调试页取得 `srflx`/`relay` 候选后额外收集 500ms，再提交当前 SDP，避免多网卡设备为不可达虚拟网卡等待整个 5 秒超时；尚未取得公网候选时继续正常收集。
 
 不要仅验证 HTTP 成功：应确认浏览器收到 `session.started`、指令 ACK、字幕和非零音频数据，结束时收到 `session.closed`。TURN 部署参数参考 [Coturn 官方 Docker 文档](https://github.com/coturn/coturn/blob/master/docker/coturn/README.md)。
 

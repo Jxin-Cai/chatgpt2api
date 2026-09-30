@@ -214,3 +214,44 @@ const activation = new blocked.RealtimeWebSocketConnection({ onEvent() {}, onCon
 activation.closed = false;
 await assert.rejects(activation.setupAudioGraph({}), /重新点击开始/);
 console.log('Live startup: pending worklets, canceled initialization and blocked activation are bounded');
+
+// A multi-interface browser can remain gathering on dead virtual adapters.
+// Do not signal a host-only Live offer, but do not delay a usable public offer.
+const iceTimers = new Map();
+let iceTimerId = 0;
+const { waitForIceGathering } = await load('../src/lib/realtime-webrtc.ts', {
+  window: {
+    setTimeout: (callback, delay) => { const id = ++iceTimerId; iceTimers.set(id, { callback, delay }); return id; },
+    clearTimeout: id => iceTimers.delete(id),
+  },
+});
+const iceListeners = new Map();
+const icePeer = {
+  iceGatheringState: 'gathering',
+  localDescription: { sdp: 'a=candidate:1 1 udp 1 192.168.1.2 5000 typ host\r\n' },
+  addEventListener: (name, callback) => iceListeners.set(name, callback),
+  removeEventListener: name => iceListeners.delete(name),
+};
+let iceReady = false;
+const gathering = waitForIceGathering(icePeer, true).then(() => { iceReady = true; });
+iceListeners.get('icecandidate')();
+await Promise.resolve();
+assert.equal(iceReady, false, 'private host addresses cannot authorize TURN traffic');
+assert.equal(iceTimers.size, 1, 'host-only offers keep the normal gather timeout');
+icePeer.localDescription.sdp += 'a=candidate:2 1 udp 1 203.0.113.2 6000 typ srflx raddr 192.168.1.2 rport 5000\r\n';
+iceListeners.get('icecandidate')();
+const usableOfferTimer = [...iceTimers.values()].find(timer => timer.delay < 5000);
+assert.ok(usableOfferTimer, 'public offer must not wait for unreachable adapters');
+usableOfferTimer.callback();
+await gathering;
+assert.equal(iceReady, true);
+assert.equal(icePeer.iceGatheringState, 'gathering');
+assert.equal(iceListeners.size, 0);
+assert.equal(iceTimers.size, 0);
+const legacyGathering = waitForIceGathering(icePeer);
+assert.equal([...iceTimers.values()][0].delay, 5000, 'legacy protocol retains full candidate collection');
+icePeer.iceGatheringState = 'complete';
+iceListeners.get('icegatheringstatechange')();
+await legacyGathering;
+assert.equal(iceTimers.size, 0);
+console.log('Live ICE: public TURN permissions retained without waiting for dead adapters');
