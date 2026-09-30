@@ -44,6 +44,7 @@ class InflightCall:
     done: bool = False
     value: Any = None
     error: BaseException | None = None
+    chunks: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _json_safe(value: Any) -> Any:
@@ -190,11 +191,11 @@ class ChatCompletionCache:
         with self._lock:
             self._prune_locked(now, max_entries)
             entry = self._entries.get(key)
-            if entry and entry.expires_at > now:
-                yield from self._copy(entry.value)
-                return
+            cached = self._copy(entry.value) if entry and entry.expires_at > now else None
             inflight = self._inflight.get(key) if settings.get("dedupe_inflight") else None
-            if inflight is None:
+            if cached is not None:
+                owner = False
+            elif inflight is None:
                 inflight = InflightCall()
                 if settings.get("dedupe_inflight"):
                     self._inflight[key] = inflight
@@ -202,25 +203,41 @@ class ChatCompletionCache:
             else:
                 owner = False
 
+        # A StreamingResponse may resume each next() on a different worker.
+        # Never suspend a generator while holding a thread-owned cache lock.
+        if cached is not None:
+            yield from cached
+            return
+
         if not owner:
-            with inflight.condition:
-                while not inflight.done:
-                    inflight.condition.wait()
-                if inflight.error:
-                    raise inflight.error
-                yield from self._copy(inflight.value)
-                return
+            cursor = 0
+            while True:
+                with inflight.condition:
+                    while cursor == len(inflight.chunks) and not inflight.done:
+                        inflight.condition.wait()
+                    ready = self._copy(inflight.chunks[cursor:])
+                    cursor += len(ready)
+                    done, error = inflight.done, inflight.error
+                yield from ready
+                if done:
+                    if error:
+                        raise error
+                    return
 
         chunks: list[dict[str, Any]] = []
         try:
             for chunk in compute():
-                chunks.append(self._copy(chunk))
+                saved = self._copy(chunk)
+                chunks.append(saved)
+                with inflight.condition:
+                    inflight.chunks.append(saved)
+                    inflight.condition.notify_all()
                 yield chunk
         except BaseException as exc:
             with self._lock:
                 self._inflight.pop(key, None)
             with inflight.condition:
-                inflight.error = exc
+                inflight.error = RuntimeError("Shared text stream was interrupted") if isinstance(exc, GeneratorExit) else exc
                 inflight.done = True
                 inflight.condition.notify_all()
             raise

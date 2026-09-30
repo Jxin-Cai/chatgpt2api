@@ -121,13 +121,13 @@ function messageImages(message: ChatMessage): string[] {
 type ChatStreamChunk = {
   model?: string;
   choices?: Array<{
-    delta?: { content?: unknown };
+    delta?: { content?: unknown; reasoning_content?: unknown };
     finish_reason?: string | null;
   }>;
   error?: unknown;
 };
 
-type StreamStatus = "idle" | "prepared" | "linked" | "streaming" | "complete" | "interrupted" | "fault";
+type StreamStatus = "idle" | "prepared" | "linked" | "thinking" | "streaming" | "complete" | "interrupted" | "fault";
 
 type StreamTelemetry = {
   status: StreamStatus;
@@ -163,6 +163,7 @@ const STREAM_STATUS_ANNOUNCEMENTS: Record<StreamStatus, string> = {
   idle: "",
   prepared: "Arc 已准备请求。",
   linked: "Arc 已建立连接，正在等待首个 token。",
+  thinking: "Arc 正在思考，回答准备好后会立即显示。",
   streaming: "Arc 正在输出回应。",
   complete: "Arc 回答已完成。",
   interrupted: "Arc 回答已中断，已保留当前内容。",
@@ -546,6 +547,11 @@ export function ChatPanel() {
     setLoading(true);
     setStreamTelemetry({ ...INITIAL_STREAM_TELEMETRY, status: "prepared" });
     setError("");
+    const elapsedTimer = window.setInterval(() => {
+      stream.elapsedMs = performance.now() - startedAt;
+      // Updating the clock must not re-parse all Markdown or move the scroll.
+      setStreamTelemetry(current => ({ ...current, elapsedMs: Math.round(stream.elapsedMs) }));
+    }, 250);
     let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
       const body = {
@@ -590,6 +596,9 @@ export function ChatPanel() {
           stream.finishReason = choice.finish_reason;
         }
         const delta = typeof choice.delta?.content === "string" ? choice.delta.content : "";
+        if (!stream.text && typeof choice.delta?.reasoning_content === "string" && choice.delta.reasoning_content) {
+          stream.status = "thinking";
+        }
         if (delta) {
           stream.text += delta;
           if (stream.firstTokenMs === null) {
@@ -639,6 +648,7 @@ export function ChatPanel() {
       }
       if (!interrupted) setError(message);
     } finally {
+      window.clearInterval(elapsedTimer);
       if (activeReader) {
         void activeReader.cancel().catch(() => undefined);
         activeReader = null;
@@ -985,6 +995,7 @@ export function ChatPanel() {
                   <span className="mt-1 block truncate text-xs text-white/48">
                     {streamTelemetry.status === "prepared" ? "请求已准备，正在建立连接…" :
                       streamTelemetry.status === "linked" ? "连接已建立，等待首个 token…" :
+                        streamTelemetry.status === "thinking" ? "正在思考，回答准备好后会立即显示…" :
                         streamTelemetry.status === "streaming" ? "正在接收增量内容…" :
                           streamTelemetry.status === "complete" ? "本轮回答已完成" :
                             streamTelemetry.status === "interrupted" ? "生成已中断，已保留当前内容" : "流式回答遇到错误"}
@@ -1000,7 +1011,7 @@ export function ChatPanel() {
                     <span className={`chat-processing-step ${streamTelemetry.status === "complete" ? "chat-processing-step--done" : streamTelemetry.status === "interrupted" ? "chat-processing-step--interrupted" : streamTelemetry.status === "fault" ? "chat-processing-step--fault" : ""}`}>
                       {streamTelemetry.status === "complete" ? `COMPLETE · ${streamTelemetry.elapsedMs}ms` :
                         streamTelemetry.status === "interrupted" ? "INTERRUPTED" :
-                          streamTelemetry.status === "fault" ? "FAULT" : "IN PROGRESS"}
+                          streamTelemetry.status === "fault" ? "FAULT" : `已等待 ${(streamTelemetry.elapsedMs / 1000).toFixed(1)} 秒`}
                     </span>
                   </span>
                 </span>

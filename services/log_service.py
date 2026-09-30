@@ -252,6 +252,7 @@ class LoggedCall:
             return response
 
         sender = anthropic_sse_stream if sse == "anthropic" else sse_json_stream
+        stream_headers = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"}
         try:
             has_first, first = await run_in_threadpool(_next_item, result)
         except ImageGenerationError as exc:
@@ -268,8 +269,8 @@ class LoggedCall:
             return _protocol_error_response(exc, 502, sse)
         if not has_first:
             self.log("流式调用结束")
-            return StreamingResponse(sender(()), media_type="text/event-stream")
-        return StreamingResponse(sender(self.stream(itertools.chain([first], result))), media_type="text/event-stream")
+            return StreamingResponse(sender(()), media_type="text/event-stream", headers=stream_headers)
+        return StreamingResponse(sender(self.stream(itertools.chain([first], result))), media_type="text/event-stream", headers=stream_headers)
 
     def stream(self, items):
         urls: list[str] = []

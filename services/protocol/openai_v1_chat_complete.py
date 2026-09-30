@@ -136,18 +136,15 @@ def stream_text_chat_completion(
 ) -> Iterator[dict[str, Any]]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
-    sent_role = False
+    # Establish SSE before upstream bootstrap / reasoning. This is a role
+    # event only, not a fabricated first content token.
+    yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
     request = ConversationRequest(model=model, messages=messages, thinking_effort=thinking_effort)
     for kind, delta_text in stream_text_parts(backend, request):
-        if not sent_role:
-            sent_role = True
-            yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
         if kind == "reasoning":
             yield completion_chunk(model, {"reasoning_content": delta_text}, None, completion_id, created)
         else:
             yield completion_chunk(model, {"content": delta_text}, None, completion_id, created)
-    if not sent_role:
-        yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
     yield completion_chunk(model, {}, "stop", completion_id, created)
 
 
