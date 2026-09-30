@@ -218,7 +218,10 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
     this.close();
     this.closed = false;
 
-    const pc = new RTCPeerConnection();
+    const pc = new RTCPeerConnection({
+      bundlePolicy: "max-bundle",
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    });
     this.pc = pc;
     pc.onconnectionstatechange = () => {
       this.handlers.onConnectionState(pc.connectionState);

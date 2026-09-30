@@ -59,7 +59,10 @@ Content-Type: application/json
 浏览器核心代码（`/api/voice-session` 是应用自己的可信服务器路由）：
 
 ```javascript
-const peer = new RTCPeerConnection();
+const peer = new RTCPeerConnection({
+  bundlePolicy: "max-bundle",
+  iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+});
 const audio = new Audio();
 audio.autoplay = true;
 audio.controls = true;
@@ -94,7 +97,8 @@ if (peer.iceGatheringState !== "complete") {
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       peer.removeEventListener("icegatheringstatechange", changed);
-      reject(new Error("ICE gathering timed out"));
+      if (/^a=candidate:.* typ (?:srflx|relay)(?:\s|$)/m.test(peer.localDescription?.sdp ?? "")) resolve();
+      else reject(new Error("ICE gathering timed out"));
     }, 10000);
     function changed() {
       if (peer.iceGatheringState === "complete") {
@@ -282,6 +286,28 @@ asyncio.run(main())
 网络恢复新建 Live 会话，并通过标准 `session.input` 携带最近最多 8 条、每条最多 600 字符的显示历史，同时保持用户静音选择。它不是上游原会话恢复，无法恢复尚未收到的字幕、精确音频时间线或模型内部状态。不自动重放未确认的文字命令，避免重复执行；原始音频也不重播。
 
 服务器需支持 WebSocket Upgrade，并允许 WebRTC UDP/ICE 媒体通信。代理仅转发 HTTP/WSS 并不足以支持新的服务器 WebRTC 媒体桥；受限网络可使用 WS。`CHATGPT2API_LIVE_ICE_SERVERS` 可配置服务器 ICE/STUN/TURN（JSON 数组，例如 `[{"urls":"stun:stun.example.com:3478"}]`）；TURN 凭据保存在服务器环境中。
+
+### Linux Docker 部署检查
+
+更新源码之后，必须重新构建并重建容器。旧容器没有 `/v1/live/sessions` 时，POST 会落到只接受 GET/HEAD 的网页兜底路由，返回 `405 Method Not Allowed`。检查运行实例的 `/openapi.json` 是否包含该 POST 路由；`/version` 的版本号不一定随每次代码提交变化，不能单独用来确认升级成功。
+
+```bash
+docker compose build app
+docker compose up -d --no-deps app
+```
+
+桥接网络只发布 `3321:80` 时，即使信令返回 201，媒体仍可能停在 ICE checking。仅出现 `host` 和 `srflx` 候选不代表容器 UDP 端口可从公网到达。可使用 `docker-compose.live.yml` 为服务端添加受认证的 TURN 中继，保留现有 HTTP 地址和 Docker 网络。该覆盖文件用于具有公网网卡的 Linux VPS；TURN 监听 Docker 网桥网关，公网媒体使用 UDP 49160–49259。主机和云防火墙需要允许该媒体端口范围。
+
+创建权限为 0600、不要提交的 `.env.live`，设置 `LIVE_TURN_LISTEN_IP`（app 所在 Docker 网桥网关）、`LIVE_TURN_RELAY_IP`（VPS 公网网卡 IPv4）和 `LIVE_TURN_PASSWORD`（使用 `secrets.token_urlsafe(32)` 生成）。密码只通过环境变量注入，不下发浏览器。若 VPS 公网地址由额外 NAT 映射，需要另行配置 TURN external-ip。
+
+```bash
+docker compose --env-file .env.live -f docker-compose.yml -f docker-compose.live.yml config --quiet
+docker compose --env-file .env.live -f docker-compose.yml -f docker-compose.live.yml up -d
+```
+
+后续升级继续使用相同覆盖文件和环境文件。浏览器也需配置可达的 STUN 服务，将公网 `srflx` 候选写入 offer，否则服务器 TURN 无法为浏览器公网 IP 建立权限。多网卡设备可能持续收集不可达网卡的候选；在收集超时时已有 `srflx`/`relay` 候选的情况下，可以提交当前 SDP，而不必放弃整个连接。
+
+不要仅验证 HTTP 成功：应确认浏览器收到 `session.started`、指令 ACK、字幕和非零音频数据，结束时收到 `session.closed`。TURN 部署参数参考 [Coturn 官方 Docker 文档](https://github.com/coturn/coturn/blob/master/docker/coturn/README.md)。
 
 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- |

@@ -1,0 +1,28 @@
+# Linux VPS overlay: preserve the HTTP bridge and relay Live WebRTC media.
+# See docs/live-api.md. Credentials are injected from an untracked env file.
+services:
+  app:
+    environment:
+      CHATGPT2API_LIVE_ICE_SERVERS: >-
+        [{"urls":"turn:${LIVE_TURN_LISTEN_IP:?Set the Docker bridge gateway}:3478?transport=udp","username":"chatgpt2api-live","credential":"${LIVE_TURN_PASSWORD:?Set a URL-safe random TURN password}"}]
+    depends_on:
+      live-turn:
+        condition: service_started
+
+  live-turn:
+    image: coturn/coturn:4.6.3@sha256:71c3c990283385567f11794ee692e3a47b66fd9b0bb39e42afbe776e331dd888
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      LIVE_TURN_LISTEN_IP: ${LIVE_TURN_LISTEN_IP:?Set the Docker bridge gateway}
+      LIVE_TURN_RELAY_IP: ${LIVE_TURN_RELAY_IP:?Set the VPS public interface IP}
+      LIVE_TURN_PASSWORD: ${LIVE_TURN_PASSWORD:?Set a URL-safe random TURN password}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        exec turnserver -n --log-file=stdout --simple-log \
+          --no-cli --no-tls --no-dtls --no-tcp-relay --no-multicast-peers \
+          --fingerprint --lt-cred-mech --realm=chatgpt2api-live \
+          --listening-ip="$${LIVE_TURN_LISTEN_IP}" --listening-port=3478 \
+          --relay-ip="$${LIVE_TURN_RELAY_IP}" --min-port=49160 --max-port=49259 \
+          --user="chatgpt2api-live:$${LIVE_TURN_PASSWORD}"
