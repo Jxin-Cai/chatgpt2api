@@ -220,7 +220,10 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
 
     const pc = new RTCPeerConnection({
       bundlePolicy: "max-bundle",
-      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      // Live answers already include the server's public TURN relay. The
+      // browser can check that address directly; an unreachable public STUN
+      // lookup otherwise holds every call for five seconds before signaling.
+      iceServers: this.protocol === "live" ? [] : [{ urls: "stun:stun.cloudflare.com:3478" }],
     });
     this.pc = pc;
     pc.onconnectionstatechange = () => {
