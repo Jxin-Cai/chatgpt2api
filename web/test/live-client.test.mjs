@@ -68,11 +68,13 @@ const globals = {
   Blob: class { constructor(parts) { workletSource = parts.join(''); } },
   URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
   WebSocket: { OPEN: 1 },
+  window: { setTimeout, clearTimeout },
   btoa: text => Buffer.from(text, 'binary').toString('base64'),
   atob: text => Buffer.from(text, 'base64').toString('binary'),
 };
 const { RealtimeWebSocketConnection } = await load('../src/lib/realtime-websocket.ts', globals);
 const connection = new RealtimeWebSocketConnection({ onEvent() {}, onConnectionState() {} }, 'live');
+connection.closed = false;
 await connection.setupAudioGraph({});
 assert.equal(requestedLatency, 'interactive');
 const sent = [];
@@ -120,12 +122,16 @@ player.process([], output);
 assert.equal(output[0][0][0], 0, 'recovered audio fades in');
 assert.ok(output[0][0].some(value => value > 0));
 
-// A network burst / suspended tab must obey the stated 600ms latency cap.
+// A 720ms TCP burst must preserve every sample, rather than cutting speech at 600ms.
+player.port.onmessage({ data: { type: 'stop' } });
+for (let i = 0; i < 18; i++) player.port.onmessage({ data: new Float32Array(1920).fill(0.25) });
+assert.equal(player.available, 18 * 1920, 'ordinary bursts must not drop buffered words');
+// A genuinely stale backlog is still bounded by the two-second ring.
 player.port.onmessage({ data: { type: 'stop' } });
 for (let i = 0; i < 60; i++) player.port.onmessage({ data: new Float32Array(1920).fill(i / 100) });
-assert.ok(player.available <= 48000 * 0.6, 'worklet cannot retain seconds of stale speech');
+assert.ok(player.available <= 48000 * 2, 'worklet cannot retain seconds of stale speech');
 player.port.onmessage({ data: new Float32Array(48000 * 3).fill(0.75) });
-assert.ok(player.available <= 48000 * 0.6, 'oversized chunks are also bounded');
+assert.ok(player.available <= 48000 * 2, 'oversized chunks are also bounded');
 
 // Exercise the actual fallback scheduler, including future scheduled sources.
 const fallbackContext = {
@@ -135,8 +141,13 @@ const fallbackContext = {
 };
 const scheduler = connection.fallbackScheduler;
 scheduler.context = fallbackContext;
+let stoppedSources = 0;
+fallbackContext.createBufferSource = () => ({ connect() {}, disconnect() {}, start() {}, stop() { stoppedSources++; } });
+for (let i = 0; i < 18; i++) scheduler.push(new Float32Array(1920));
+assert.equal(stoppedSources, 0, 'fallback must preserve a 720ms burst too');
+assert.ok(Math.abs(scheduler.nextAt - 0.74) < 1e-6);
 for (let i = 0; i < 80; i++) scheduler.push(new Float32Array(1920));
-assert.ok(scheduler.nextAt <= 0.6, 'fallback also discards stale scheduled sources');
+assert.ok(scheduler.nextAt <= 2.02, 'fallback also discards stale scheduled sources');
 fallbackContext.currentTime = 5;
 scheduler.push(new Float32Array(960));
 assert.equal(scheduler.buffering, true, 'fallback refills after an underrun');
@@ -154,7 +165,7 @@ const { RealtimeWebRTCConnection } = await load('../src/lib/realtime-webrtc.ts',
 const rtc = new RealtimeWebRTCConnection({ onEvent() {}, onConnectionState() {}, onQuality: q => { sampleQuality = q; } }, 'live');
 rtc.closed = false;
 rtc.audioReceiver = { jitterBufferTarget: 0 };
-rtc.setJitterBufferTarget(60);
+rtc.setJitterBufferTarget(120);
 const peer = { connectionState: 'connected', getStats: async () => {
   statsTick++;
   return new Map([['audio', { type: 'inbound-rtp', kind: 'audio', jitter,
@@ -167,12 +178,39 @@ rtc.startQualitySampling(peer);
 const sampleRtc = async () => { sampleCallback(); await new Promise(setImmediate); };
 await new Promise(setImmediate);
 for (let i = 0; i < 20; i++) await sampleRtc();
-assert.equal(rtc.audioReceiver.jitterBufferTarget, 60, 'loss alone must not ratchet buffering');
+assert.equal(rtc.audioReceiver.jitterBufferTarget, 120, 'loss alone must not ratchet buffering');
 assert.equal(sampleQuality.jitterBufferMs, 100, 'display current interval buffering');
 jitter = 0.12;
 await sampleRtc();
-assert.equal(rtc.audioReceiver.jitterBufferTarget, 180, 'jitter protection has a conversational cap');
+assert.equal(rtc.audioReceiver.jitterBufferTarget, 240, 'jitter protection has a conversational cap');
 jitter = 0.001;
-for (let i = 0; i < 15; i++) await sampleRtc();
-assert.equal(rtc.audioReceiver.jitterBufferTarget, 60, 'recover promptly when jitter settles');
+for (let i = 0; i < 45; i++) await sampleRtc();
+assert.equal(rtc.audioReceiver.jitterBufferTarget, 120, 'recover promptly when jitter settles');
 console.log('Live client: transcripts, continuity, resampling, bounded worklet/fallback latency and jitter recovery passed');
+
+// Worklet loading and blocked audio activation must never hang before connect's timeout.
+class HungWorkletContext extends Context {
+  constructor(options) { super(options); this.audioWorklet.addModule = () => new Promise(() => {}); }
+  createScriptProcessor() { return new Node(); }
+  async close() {}
+}
+const boundedTimers = { setTimeout: callback => setTimeout(callback, 1), clearTimeout };
+const hung = await load('../src/lib/realtime-websocket.ts', { ...globals, AudioContext: HungWorkletContext, window: boundedTimers });
+const recovering = new hung.RealtimeWebSocketConnection({ onEvent() {}, onConnectionState() {} }, 'live');
+recovering.closed = false;
+await recovering.setupAudioGraph({});
+assert.ok(recovering.captureNode, 'pending addModule must fall back to capture');
+assert.equal(recovering.playbackNode, null);
+const canceled = new hung.RealtimeWebSocketConnection({ onEvent() {}, onConnectionState() {} }, 'live');
+canceled.closed = false;
+const preparing = canceled.setupAudioGraph({});
+await Promise.resolve();
+canceled.close();
+await preparing.catch(error => assert.match(error.message, /连接已取消/));
+assert.equal(canceled.captureNode, null, 'canceled startup must not install late audio nodes');
+class BlockedAudioContext extends HungWorkletContext { resume() { return new Promise(() => {}); } }
+const blocked = await load('../src/lib/realtime-websocket.ts', { ...globals, AudioContext: BlockedAudioContext, window: boundedTimers });
+const activation = new blocked.RealtimeWebSocketConnection({ onEvent() {}, onConnectionState() {} }, 'live');
+activation.closed = false;
+await assert.rejects(activation.setupAudioGraph({}), /重新点击开始/);
+console.log('Live startup: pending worklets, canceled initialization and blocked activation are bounded');

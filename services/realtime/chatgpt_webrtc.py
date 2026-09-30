@@ -7,7 +7,6 @@ from typing import Any
 from aiortc import RTCPeerConnection, RTCSessionDescription
 
 from services.realtime.audio_track import BufferedAudioStreamTrack
-from services.realtime.receive_buffer import configure_audio_receivers
 from services.realtime.signaling import UpstreamSignalingError
 
 REALTIME_DEFAULT_VOICE = "ember"
@@ -175,10 +174,9 @@ async def create_peer_connection(
         (pc, input_audio_track, data_channel, remote_audio_track, session_location)
     """
     pc = RTCPeerConnection()
-    input_track = BufferedAudioStreamTrack()
+    input_track = BufferedAudioStreamTrack(prefill_frames=3, smooth_edges=True)
     pc.addTrack(input_track)
     pc.addTransceiver("video", direction="sendonly")
-    configure_audio_receivers(pc)
     dc = pc.createDataChannel("", negotiated=True, id=0)
     if on_message:
         dc.on("message", on_message)

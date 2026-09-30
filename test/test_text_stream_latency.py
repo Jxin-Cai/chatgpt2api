@@ -16,28 +16,22 @@ def cache():
     return instance
 
 
-def test_follower_receives_each_chunk_before_owner_finishes():
+def test_slow_consumer_does_not_hold_other_streams_in_worker_pool():
     store = cache()
-    source = Mock(return_value=iter([{"text": "first"}, {"text": "second"}]))
-    owner = store.get_or_compute_stream("key", source)
-    follower = store.get_or_compute_stream("key", source)
-    assert next(owner) == {"text": "first"}
+    source = Mock(side_effect=lambda: iter([{"text": "first"}, {"text": "second"}]))
+    slow = store.get_or_compute_stream("key", source)
+    assert next(slow) == {"text": "first"}
+    fast = store.get_or_compute_stream("key", source)
+    # The previous shared stream blocked here until slow requested its next
+    # chunk. Enough such waiters starved that owner of a worker permanently.
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(next, follower)
+        pending = pool.submit(list, fast)
         try:
-            assert pending.result(timeout=1) == {"text": "first"}
-            assert next(owner) == {"text": "second"}
-            assert next(follower) == {"text": "second"}
-            assert list(owner) == []
-            assert list(follower) == []
-            source.assert_called_once()
+            assert pending.result(timeout=1) == [{"text": "first"}, {"text": "second"}]
+            assert source.call_count == 2
         finally:
-            owner.close()  # also release the old implementation's blocked waiter
-            try:
-                pending.result(timeout=1)
-            except BaseException:
-                pass
-            follower.close()
+            slow.close()
+            pending.result(timeout=1)
 
 
 def test_cached_stream_can_resume_and_finish_on_different_worker_threads():
@@ -67,24 +61,21 @@ def test_subscriber_can_suspend_without_blocking_other_cache_keys():
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-def test_partial_stream_error_is_propagated_and_never_cached(cancel):
+def test_partial_stream_error_is_never_cached_and_retry_is_independent(cancel):
     store = cache()
     def broken():
         yield {"text": "partial"}
         raise RuntimeError("upstream failed")
     owner = store.get_or_compute_stream("key", broken)
     assert next(owner) == {"text": "partial"}
-    follower = store.get_or_compute_stream("key", broken)
-    assert next(follower) == {"text": "partial"}
     if cancel:
         owner.close()
     else:
         with pytest.raises(RuntimeError, match="upstream failed"):
             next(owner)
-    with pytest.raises(RuntimeError, match="interrupted" if cancel else "upstream failed"):
-        next(follower)
     assert not store._entries
     assert not store._inflight
+    assert list(store.get_or_compute_stream("key", lambda: iter([{"text": "retry"}]))) == [{"text": "retry"}]
 
 
 def test_sse_headers_and_role_arrive_before_upstream_work(monkeypatch):

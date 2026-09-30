@@ -44,7 +44,6 @@ class InflightCall:
     done: bool = False
     value: Any = None
     error: BaseException | None = None
-    chunks: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _json_safe(value: Any) -> Any:
@@ -192,65 +191,25 @@ class ChatCompletionCache:
             self._prune_locked(now, max_entries)
             entry = self._entries.get(key)
             cached = self._copy(entry.value) if entry and entry.expires_at > now else None
-            inflight = self._inflight.get(key) if settings.get("dedupe_inflight") else None
-            if cached is not None:
-                owner = False
-            elif inflight is None:
-                inflight = InflightCall()
-                if settings.get("dedupe_inflight"):
-                    self._inflight[key] = inflight
-                owner = True
-            else:
-                owner = False
 
-        # A StreamingResponse may resume each next() on a different worker.
-        # Never suspend a generator while holding a thread-owned cache lock.
+        # HTTP consumers are resumed in Starlette's bounded worker pool. A
+        # follower waiting on an owner can exhaust that pool before the owner
+        # gets a worker for its next chunk. Cache completed streams, but never
+        # make one in-flight HTTP consumer depend on another consumer draining.
         if cached is not None:
             yield from cached
             return
 
-        if not owner:
-            cursor = 0
-            while True:
-                with inflight.condition:
-                    while cursor == len(inflight.chunks) and not inflight.done:
-                        inflight.condition.wait()
-                    ready = self._copy(inflight.chunks[cursor:])
-                    cursor += len(ready)
-                    done, error = inflight.done, inflight.error
-                yield from ready
-                if done:
-                    if error:
-                        raise error
-                    return
-
         chunks: list[dict[str, Any]] = []
-        try:
-            for chunk in compute():
-                saved = self._copy(chunk)
-                chunks.append(saved)
-                with inflight.condition:
-                    inflight.chunks.append(saved)
-                    inflight.condition.notify_all()
-                yield chunk
-        except BaseException as exc:
-            with self._lock:
-                self._inflight.pop(key, None)
-            with inflight.condition:
-                inflight.error = RuntimeError("Shared text stream was interrupted") if isinstance(exc, GeneratorExit) else exc
-                inflight.done = True
-                inflight.condition.notify_all()
-            raise
+        for chunk in compute():
+            chunks.append(self._copy(chunk))
+            yield chunk
 
+        # Exceptions / generator cancellation never cache a partial response.
         expires_at = time.time() + int(settings.get("ttl_seconds") or 0)
         with self._lock:
-            self._entries[key] = CacheEntry(expires_at=expires_at, value=self._copy(chunks))
+            self._entries[key] = CacheEntry(expires_at=expires_at, value=chunks)
             self._prune_locked(time.time(), max_entries)
-            self._inflight.pop(key, None)
-        with inflight.condition:
-            inflight.value = self._copy(chunks)
-            inflight.done = True
-            inflight.condition.notify_all()
 
 
 chat_completion_cache = ChatCompletionCache()

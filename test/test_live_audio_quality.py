@@ -155,3 +155,28 @@ def test_drains_upstream_before_browser_ready_when_webrtc_is_prepared():
         # Assert: preparation owns the reader, including failed-handshake cleanup.
         assert task.cancelled()
     asyncio.run(run())
+
+
+def test_account_update_does_not_pause_active_media_loop():
+    import threading
+    from unittest.mock import AsyncMock
+    from services.live.protocol import parse_config
+    from services.live.session import LiveSession
+
+    async def run():
+        release = threading.Event()
+        serviced_during_update = []
+        def update_account(_token):
+            # Models an account refresh / disk write waiting on I/O. The media
+            # event loop must remain able to deliver frames while it waits.
+            serviced_during_update.append(release.wait(.5))
+        session = LiveSession(identity={}, websocket=object(), access_token="dummy",
+                              config=parse_config({"model": "gpt-live-1"}),
+                              account_available_callback=update_account)
+        session._start_once = AsyncMock()
+        async def service_media():
+            await asyncio.sleep(.01)
+            release.set()
+        await asyncio.gather(session._start(), service_media())
+        assert serviced_during_update == [True]
+    asyncio.run(run())

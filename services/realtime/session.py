@@ -15,7 +15,6 @@ from fastapi import WebSocket
 
 from services.realtime.audio_track import BufferedAudioStreamTrack, SAMPLE_RATE
 from services.realtime.chatgpt_webrtc import create_peer_connection
-from services.realtime.receive_buffer import audio_receive_stats
 from services.realtime.signaling import UpstreamSignalingError
 from utils.log import logger
 
@@ -329,13 +328,13 @@ class RealtimeSession:
                 await self._start_once(access_token)
                 self._access_token = access_token
                 if self._account_available_callback:
-                    self._account_available_callback(access_token)
+                    await asyncio.to_thread(self._account_available_callback, access_token)
                 return
             except (RealtimeQuotaExceeded, UpstreamSignalingError) as exc:
                 if isinstance(exc, UpstreamSignalingError) and not exc.is_quota_limited:
                     raise
                 if self._account_limited_callback:
-                    self._account_limited_callback(access_token)
+                    await asyncio.to_thread(self._account_limited_callback, access_token)
                 excluded.add(access_token)
                 logger.warning("[realtime] Upstream account voice quota exhausted; trying next account")
                 if self._pc:
@@ -347,7 +346,7 @@ class RealtimeSession:
                 if not self._access_token_provider:
                     raise
                 try:
-                    access_token = self._access_token_provider(excluded)
+                    access_token = await asyncio.to_thread(self._access_token_provider, excluded)
                 except RuntimeError as provider_error:
                     raise RealtimeQuotaExceeded(str(provider_error)) from exc
 
@@ -654,7 +653,7 @@ class RealtimeSession:
                 quota_error = quota_error_from_message(data)
                 if quota_error:
                     if self._account_limited_callback:
-                        self._account_limited_callback(self._access_token)
+                        await asyncio.to_thread(self._account_limited_callback, self._access_token)
                     await self._send_error(quota_error, code="realtime_quota_exhausted")
                     return
             except (json.JSONDecodeError, TypeError):
@@ -744,6 +743,5 @@ class RealtimeSession:
         logger.info(
             f"[realtime] Session closed after {duration:.1f}s "
             f"(dc_dropped={self._dc_dropped_messages}, "
-            f"upstream_audio={audio_receive_stats(self._pc)}, "
             f"input_dropped={self._input_track.dropped_frames if self._input_track else 0})"
         )

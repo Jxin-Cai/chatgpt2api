@@ -76,8 +76,8 @@ export interface RealtimeConnection {
 const CONNECTION_TIMEOUT_MS = 15_000;
 const ICE_GATHERING_TIMEOUT_MS = 5_000;
 const DATA_CHANNEL_TIMEOUT_MS = 10_000;
-const INITIAL_JITTER_BUFFER_MS = 60;
-const MAX_JITTER_BUFFER_MS = 180;
+const INITIAL_JITTER_BUFFER_MS = 120;
+const MAX_JITTER_BUFFER_MS = 300;
 
 type BufferedAudioReceiver = RTCRtpReceiver & {
   jitterBufferTarget?: number | null;
@@ -636,16 +636,19 @@ export class RealtimeWebRTCConnection implements RealtimeConnection {
                 quality.jitterBufferMs = Math.round(Math.max(0, current.jitterBufferDelay - previous.jitterBufferDelay) / emitted * 1000);
               }
 
-              // Packet loss is not repaired by waiting longer. Size the extra
-              // playout delay from measured jitter, without a loss-driven ratchet.
+              // Average jitter misses short late-packet bursts. Concealment
+              // without packet loss means playback ran ahead of arrivals.
+              const lateAudio = (quality.concealedSamplePercent || 0) > 1
+                && (quality.packetLossPercent || 0) < 1;
               const desired = Math.min(MAX_JITTER_BUFFER_MS, Math.max(INITIAL_JITTER_BUFFER_MS,
-                Math.ceil((quality.jitterMs || 0) * 2 / 20) * 20));
+                Math.ceil((quality.jitterMs || 0) * 2 / 20) * 20,
+                lateAudio ? this.jitterBufferTargetMs + 40 : INITIAL_JITTER_BUFFER_MS));
               if (desired > this.jitterBufferTargetMs) {
                 this.healthyQualitySamples = 0;
                 this.setJitterBufferTarget(desired);
               } else {
                 this.healthyQualitySamples += 1;
-                if (this.healthyQualitySamples >= 5 && this.jitterBufferTargetMs > desired) {
+                if (this.healthyQualitySamples >= 15 && this.jitterBufferTargetMs > desired) {
                   this.setJitterBufferTarget(Math.max(desired, this.jitterBufferTargetMs - 40));
                   this.healthyQualitySamples = 0;
                 }

@@ -8,7 +8,8 @@ import {
 
 const SAMPLE_RATE = 48_000;
 const PLAYOUT_LEAD_SECONDS = 0.18;
-const PLAYOUT_MAX_LEAD_SECONDS = 0.6;
+const PLAYOUT_MAX_LEAD_SECONDS = 2;
+const WORKLET_START_TIMEOUT_MS = 1500;
 const CONNECTION_TIMEOUT_MS = 60_000;
 
 class LinearPcmResampler {
@@ -77,7 +78,7 @@ class BufferSourceScheduler {
       }
       this.activeSources.clear();
       this.stop();
-      samples = samples.subarray(Math.max(0, samples.length - this.prefillSamples));
+      samples = samples.subarray(Math.max(0, samples.length - maxSamples));
     }
     if (this.buffering) {
       this.pending.push(samples);
@@ -187,6 +188,10 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     this.closed = false;
     this.microphoneEnabled = options.microphoneEnabled !== false;
     this.handlers.onConnectionState("connecting");
+    // Unlock audio while the connect click still has user activation, before
+    // a microphone prompt or signaling round trip can consume it.
+    this.audioContext = new AudioContext({ latencyHint: "interactive" });
+    void this.audioContext.resume().catch(() => undefined);
 
     const microphone = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -205,6 +210,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     microphone.getAudioTracks().forEach(track => { track.enabled = this.microphoneEnabled; });
     this.bindMicrophoneState(microphone);
     await this.setupAudioGraph(microphone);
+    if (this.closed) throw new Error("连接已取消");
 
     const token = options.authorization.replace(/^Bearer\s+/i, "").trim();
     if (!token) throw new Error("实时中继缺少认证信息");
@@ -402,9 +408,20 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
   }
 
   private async setupAudioGraph(stream: MediaStream): Promise<void> {
-    const context = new AudioContext({ sampleRate: this.sampleRate, latencyHint: "interactive" });
+    const context = this.audioContext || new AudioContext({ latencyHint: "interactive" });
     this.audioContext = context;
-    await context.resume();
+    let resumeTimeout = 0;
+    try {
+      await Promise.race([
+        context.resume(),
+        new Promise<never>((_, reject) => {
+          resumeTimeout = window.setTimeout(() => reject(new Error("请重新点击开始以启用浏览器音频")), 3000);
+        }),
+      ]);
+    } finally {
+      window.clearTimeout(resumeTimeout);
+    }
+    if (this.closed) throw new Error("连接已取消");
 
     const playbackGain = context.createGain();
     playbackGain.connect(context.destination);
@@ -500,14 +517,12 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
               this.ending = false;
               let samples = data instanceof Float32Array ? data : new Float32Array(data);
               if (samples.length > this.maxBuffered) {
-                samples = samples.subarray(samples.length - this.prefill);
+                samples = samples.subarray(samples.length - this.maxBuffered);
                 this.discontinuous = true;
               }
-              // The ring's physical capacity is not a latency budget. Recover
-              // to the live edge after a stalled tab / burst instead of keeping
-              // seconds of old speech permanently queued.
-              const overflow = this.available + samples.length > this.maxBuffered
-                ? Math.min(this.available, this.available + samples.length - this.prefill) : 0;
+              // A short TCP burst is not stale speech. Preserve it in order;
+              // only trim the excess when the actual bounded ring is full.
+              const overflow = Math.max(0, this.available + samples.length - this.maxBuffered);
               if (overflow > 0) {
                 this.read = (this.read + overflow) % this.buffer.length;
                 this.available -= overflow;
@@ -572,8 +587,21 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
         registerProcessor('realtime-pcm-playback', RealtimePcmPlayback);
       `;
       const moduleUrl = URL.createObjectURL(new Blob([processorSource], { type: "text/javascript" }));
-      await context.audioWorklet.addModule(moduleUrl);
-      URL.revokeObjectURL(moduleUrl);
+      let moduleTimeout = 0;
+      try {
+        // Some devices leave addModule pending forever. Capture must still
+        // start via ScriptProcessor instead of hanging before socket creation.
+        await Promise.race([
+          context.audioWorklet.addModule(moduleUrl),
+          new Promise<never>((_, reject) => {
+            moduleTimeout = window.setTimeout(() => reject(new Error("AudioWorklet startup timed out")), WORKLET_START_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        window.clearTimeout(moduleTimeout);
+        URL.revokeObjectURL(moduleUrl);
+      }
+      if (this.closed) return;
       const processor = new AudioWorkletNode(context, "realtime-pcm-capture", {
         numberOfInputs: 1,
         numberOfOutputs: 1,
@@ -598,6 +626,7 @@ export class RealtimeWebSocketConnection implements RealtimeConnection {
     } catch {
       this.playbackNode = null;
     }
+    if (this.closed) return;
     if (this.captureNode) return;
     try {
       const processor = context.createScriptProcessor(2_048, 1, 1);

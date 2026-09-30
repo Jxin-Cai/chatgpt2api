@@ -680,11 +680,11 @@ export function RealtimePanel() {
         if (state === "muted") setStatusDetail("麦克风没有提供音频，请检查系统输入设备和权限");
       },
     };
-    let connection: RealtimeConnection = new RealtimeWebRTCConnection(handlers, "live");
+    let connection: RealtimeConnection = new RealtimeWebSocketConnection(handlers, "live");
     realtimeRef.current = connection;
 
     try {
-      addLog("info", retry ? "正在切换账号并重连…" : "正在建立 Live WebRTC 会话…");
+      addLog("info", retry ? "正在切换账号并重连…" : "正在建立 Live 语音会话…");
       const options = {
         authorization: `Bearer ${session.key}`,
         voice,
@@ -708,9 +708,9 @@ export function RealtimePanel() {
         if (relayError instanceof RealtimeSignalingError && relayError.status >= 400 && relayError.status < 500) throw relayError;
         addLog(
           "info",
-          `WebRTC 不可用，回退 Live WebSocket：${relayError instanceof Error ? relayError.message : String(relayError)}`,
+          `WebSocket 不可用，回退 Live WebRTC：${relayError instanceof Error ? relayError.message : String(relayError)}`,
         );
-        connection = new RealtimeWebSocketConnection(handlers, "live");
+        connection = new RealtimeWebRTCConnection(handlers, "live");
         realtimeRef.current = connection;
         result = await connection.connect(options);
       }

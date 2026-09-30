@@ -17,6 +17,7 @@ from services.live.session import LiveSession
 from services.live.transport import WebRTCTransport
 from services.realtime.chatgpt_webrtc import OFFICIAL_VOICE_ALIASES
 from services.realtime.signaling import SignalingBusyError, realtime_signaling_guard
+from utils.log import logger
 
 
 class LiveRuntime:
@@ -123,7 +124,7 @@ def create_router() -> APIRouter:
             transport = WebRTCTransport()
             # Validate browser SDP before consuming an upstream session.
             answer = await asyncio.wait_for(transport.answer(spec["sdp"]), timeout=15)
-            session = make_session(identity, config, transport, session_id)
+            session = await asyncio.to_thread(make_session, identity, config, transport, session_id)
             transport.on_audio = session.feed_media
             transport.on_disconnect = session._stop.set
             live_runtime.bind(session)
@@ -203,7 +204,7 @@ def create_router() -> APIRouter:
                 raise LiveError("First command must be session.start", "type", "session_not_started")
             config = parse_config(data.get("session"))
             session_id = live_runtime.reserve(identity)
-            session = make_session(identity, config, websocket, session_id)
+            session = await asyncio.to_thread(make_session, identity, config, websocket, session_id)
             live_runtime.bind(session)
             async with realtime_signaling_guard.signaling_slot():
                 await session.prepare()
@@ -215,7 +216,8 @@ def create_router() -> APIRouter:
             exc = error
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
+            logger.warning(f"[live] WebSocket startup failed: {type(error).__name__}")
             exc = LiveError("Voice session could not be established", code="upstream_unavailable")
         finally:
             if task:
