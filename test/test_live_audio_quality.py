@@ -110,3 +110,48 @@ def test_webrtc_forwards_quiet_frames_without_replaying_dtx_gap():
         await session._audio_sender()
         assert b"".join(sink.pcm) == block(3000) + block(0) + block(50)
     asyncio.run(run())
+
+
+def test_discards_startup_backlog_when_browser_transport_is_not_ready():
+    from services.live.transport import WebRTCTransport
+
+    async def run():
+        # Arrange: provider frames arrive before the browser finishes ICE.
+        transport = WebRTCTransport()
+        try:
+            # Act
+            for _ in range(200):
+                transport.write_audio(block())
+            transport.channel = SimpleNamespace(readyState="open")
+            transport.write_audio(block(-12000))
+            # Assert: only fresh media can enter playout; no overflow splice.
+            assert transport.output.buffered_frames == 1
+            assert transport.output.dropped_frames == 0
+        finally:
+            await transport.close()
+    asyncio.run(run())
+
+
+def test_drains_upstream_before_browser_ready_when_webrtc_is_prepared():
+    from unittest.mock import AsyncMock
+    from services.live.protocol import parse_config
+    from services.live.session import LiveSession
+
+    async def run():
+        # Arrange
+        session = LiveSession(identity={}, websocket=object(), access_token="dummy",
+                              config=parse_config({"model": "gpt-live-1"}, "webrtc"))
+        session._start = AsyncMock()
+        draining = asyncio.Event()
+        async def drain():
+            draining.set()
+            await asyncio.Event().wait()
+        session._audio_sender = drain
+        # Act
+        await session.prepare()
+        await asyncio.wait_for(draining.wait(), 1)
+        task = session._media_task
+        await session.close()
+        # Assert: preparation owns the reader, including failed-handshake cleanup.
+        assert task.cancelled()
+    asyncio.run(run())

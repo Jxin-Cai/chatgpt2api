@@ -146,7 +146,9 @@ class WebRTCTransport:
                 await asyncio.sleep(0.01)
 
     def write_audio(self, pcm: bytes) -> None:
-        if not self._closed:
+        # Preparing the provider must not queue stale audio for a browser that
+        # has not connected yet. Start buffering only at the live media edge.
+        if not self._closed and self.channel and self.channel.readyState == "open":
             self.output.push_pcm16(pcm)
 
     def clear_audio(self) -> None:
